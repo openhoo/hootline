@@ -69,6 +69,13 @@ test("x-gitlab-token header is redacted", () => {
   assert.ok(out.includes("[REDACTED]"));
 });
 
+test("x-hub-signature-256 header keeps prefix but drops the digest", () => {
+  const digest = "1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef";
+  const out = redact(`x-hub-signature-256: sha256=${digest}`);
+  assert.ok(!out.includes(digest));
+  assert.ok(out.includes("x-hub-signature-256: sha256=[REDACTED]"));
+});
+
 test("raw gho_/ghu_ token mid-text is redacted", () => {
   const secret = "gho_16ABcdEFghIJklMNopQRstUVwxYZ0123456789";
   const out = redact(`prefix ${secret} suffix`);

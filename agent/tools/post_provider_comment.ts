@@ -1,8 +1,11 @@
 import { defineTool } from "eve/tools";
 
 import { resolveCurrentAttempt } from "../lib/current.ts";
+import { createLogger, logError } from "../lib/logger.ts";
 import { getProviderClient } from "../lib/providers/index.ts";
 import { commentSchema, readOptionalString, readRequiredString } from "../lib/tool-input.ts";
+
+const log = createLogger("tools.post_provider_comment");
 
 export default defineTool({
   description:
@@ -10,7 +13,16 @@ export default defineTool({
   inputSchema: commentSchema,
   async execute(input, ctx) {
     const { attempt } = resolveCurrentAttempt(ctx, readOptionalString(input, "attemptKey"));
-    await getProviderClient(attempt.event.provider).postComment(attempt.event, readRequiredString(input, "body"));
-    return { posted: true };
+    const tlog = log.child({ attemptKey: attempt.key, provider: attempt.event.provider });
+    tlog.debug("post_provider_comment invoked");
+    try {
+      // The comment body is model-authored; do not log it.
+      await getProviderClient(attempt.event.provider).postComment(attempt.event, readRequiredString(input, "body"));
+      tlog.info("provider comment posted");
+      return { posted: true };
+    } catch (error) {
+      logError(tlog, "post_provider_comment failed", error);
+      throw error;
+    }
   },
 });

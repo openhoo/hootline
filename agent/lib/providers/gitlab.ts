@@ -1,3 +1,4 @@
+import { createLogger } from "../logger.ts";
 import { redact } from "../redact.ts";
 import { validateChangesAgainstPolicy } from "../sandbox.ts";
 import type {
@@ -33,6 +34,8 @@ interface GitLabCommitAction {
   content?: string;
   encoding?: "base64";
 }
+
+const log = createLogger("providers.gitlab");
 
 export class GitLabProvider implements ProviderClient {
   async getFailureContext(event: NormalizedPipelineEvent): Promise<FailureContext> {
@@ -325,12 +328,14 @@ export class GitLabProvider implements ProviderClient {
   }
 
   private async requestRaw(
-    _event: NormalizedPipelineEvent,
+    event: NormalizedPipelineEvent,
     method: string,
     path: string,
     body?: unknown,
     timeoutMs: number = PROVIDER_REQUEST_TIMEOUT_MS,
   ): Promise<Response> {
+    // The path carries no credentials (the token is in the private-token header).
+    log.debug({ repoSlug: event.repoSlug, method, path }, "gitlab api request");
     const token = process.env.GITLAB_TOKEN;
     if (!token) throw new Error("GITLAB_TOKEN is required.");
     const baseUrl = process.env.GITLAB_BASE_URL ?? "https://gitlab.com";

@@ -1,9 +1,12 @@
 import { defineTool } from "eve/tools";
 
 import { resolveCurrentAttempt } from "../lib/current.ts";
+import { createLogger, logError } from "../lib/logger.ts";
 import { getProviderClient } from "../lib/providers/index.ts";
 import { updateAttempt } from "../lib/state.ts";
 import { optionalAttemptKeySchema, readOptionalString } from "../lib/tool-input.ts";
+
+const log = createLogger("tools.get_failure_context");
 
 export default defineTool({
   description:
@@ -11,8 +14,16 @@ export default defineTool({
   inputSchema: optionalAttemptKeySchema,
   async execute(input, ctx) {
     const { config, attempt } = resolveCurrentAttempt(ctx, readOptionalString(input, "attemptKey"));
-    const failureContext = await getProviderClient(attempt.event.provider).getFailureContext(attempt.event);
-    updateAttempt(config.statePath, attempt.key, { lastFailureContext: failureContext });
-    return failureContext;
+    const tlog = log.child({ attemptKey: attempt.key, provider: attempt.event.provider });
+    tlog.debug("get_failure_context invoked");
+    try {
+      const failureContext = await getProviderClient(attempt.event.provider).getFailureContext(attempt.event);
+      updateAttempt(config.statePath, attempt.key, { lastFailureContext: failureContext });
+      tlog.info("failure context refreshed");
+      return failureContext;
+    } catch (error) {
+      logError(tlog, "get_failure_context failed", error);
+      throw error;
+    }
   },
 });

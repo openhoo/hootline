@@ -3,7 +3,10 @@ import { resolve } from "node:path";
 import { parse } from "yaml";
 import { z } from "zod";
 
+import { createLogger, logError } from "./logger.ts";
 import type { PipelineFixerConfig, Provider, RepoPolicy } from "./types.ts";
+
+const log = createLogger("lib.config");
 
 const publishModeSchema = z.enum(["pr_mr", "push_branch", "auto_merge"]);
 
@@ -55,7 +58,15 @@ type RepoInput = z.infer<typeof repoSchema>;
 
 export function loadConfig(path = process.env.PIPELINE_FIXER_CONFIG): PipelineFixerConfig {
   const configPath = resolve(path ?? "config/pipeline-fixer.yaml");
-  const parsed = configSchema.parse(parse(readFileSync(configPath, "utf8")) ?? {});
+  let parsed: z.infer<typeof configSchema>;
+  try {
+    parsed = configSchema.parse(parse(readFileSync(configPath, "utf8")) ?? {});
+  } catch (error) {
+    // configPath is a filesystem path (not a secret); the error is redacted by the
+    // logger in case a parse error echoes file content.
+    logError(log, "failed to load pipeline-fixer config", error, { configPath });
+    throw error;
+  }
   const repositories = parsed.repositories.map((repo) => buildRepoPolicy(parsed.defaults, repo));
 
   return {

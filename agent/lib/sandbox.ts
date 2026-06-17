@@ -3,9 +3,12 @@ import { posix as pathPosix } from "node:path";
 import type { SandboxSession } from "eve/sandbox";
 
 import { matchesAnyPattern } from "./glob.ts";
+import { createLogger } from "./logger.ts";
 import { redact } from "./redact.ts";
 import type { AttemptRecord, RepoPolicy, SandboxChange } from "./types.ts";
 import { isRecord } from "./unknown.ts";
+
+const log = createLogger("lib.sandbox");
 
 const SNAPSHOT_MARKER_PATH = ".hootline/staged-repository.json";
 const MAX_COMMAND_LENGTH = 500;
@@ -112,6 +115,8 @@ export async function runVerificationCommands(
       stdoutTruncated: stdout.truncated,
       stderrTruncated: stderr.truncated,
     });
+    // Trace which command ran and its exit code; never log captured stdout/stderr.
+    log.debug({ command: redact(command, MAX_COMMAND_LENGTH), exitCode }, "verification command finished");
     if (exitCode !== 0) return { ok: false, results };
   }
   return { ok: true, results };
@@ -130,12 +135,17 @@ export async function runVerificationCommandsWithPolicy(
     await applySandboxNetworkPolicy(sandbox, policy);
     networkPolicy.applied = true;
   } catch (error) {
+    const message = formatNetworkPolicyError("apply", error);
+    log.warn(
+      { verificationPolicy: networkPolicy.verificationPolicy, detail: message },
+      "sandbox network policy apply failed; skipping verification",
+    );
     return {
       ok: false,
       results: [],
       networkPolicy: {
         ...networkPolicy,
-        error: formatNetworkPolicyError("apply", error),
+        error: message,
       },
     };
   }
@@ -144,6 +154,7 @@ export async function runVerificationCommandsWithPolicy(
   try {
     result = await runVerificationCommands(sandbox, policy.verificationCommands);
   } catch (error) {
+    log.warn({ err: error }, "verification command runner threw before completion");
     result = {
       ok: false,
       results: [
@@ -162,7 +173,10 @@ export async function runVerificationCommandsWithPolicy(
       await sandbox.setNetworkPolicy("deny-all");
       networkPolicy.restoredDenyAll = true;
     } catch (error) {
-      networkPolicy.restoreError = formatNetworkPolicyError("restore deny-all", error);
+      const message = formatNetworkPolicyError("restore deny-all", error);
+      // Security-relevant: the sandbox may retain network access if this fails.
+      log.warn({ detail: message }, "failed to restore deny-all sandbox network policy after verification");
+      networkPolicy.restoreError = message;
     }
   }
 

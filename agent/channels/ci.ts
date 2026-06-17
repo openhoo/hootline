@@ -1,6 +1,7 @@
 import { defineChannel, POST, type SendFn } from "eve/channels";
 
 import { findRepoPolicy, loadConfig } from "../lib/config.ts";
+import { createLogger, logError, type Logger } from "../lib/logger.ts";
 import { assertEventAllowedByPolicy } from "../lib/policy.ts";
 import { getProviderClient } from "../lib/providers/index.ts";
 import {
@@ -23,11 +24,18 @@ import {
   verifyGitLabWebhookRequest,
 } from "../lib/webhooks.ts";
 
+const log = createLogger("channels.ci");
+
 export default defineChannel({
   routes: [
     POST("/eve/v1/ci/github", async (req, { send, waitUntil }) => {
       const body = await req.text();
       if (!verifyGitHubWebhook(body, req.headers)) {
+        // Never log the raw signature header or body — only that verification failed.
+        log.warn(
+          { provider: "github", deliveryId: req.headers.get("x-github-delivery") },
+          "github webhook signature verification failed",
+        );
         return Response.json({ ok: false, error: "invalid_signature" }, { status: 401 });
       }
       const event = normalizeGitHubEvent(parseJson(body), req.headers);
@@ -37,6 +45,10 @@ export default defineChannel({
       const body = await req.text();
       const verification = verifyGitLabWebhookRequest(body, req.headers);
       if (verification === "none") {
+        log.warn(
+          { provider: "gitlab", deliveryId: req.headers.get("x-gitlab-event-uuid") },
+          "gitlab webhook signature verification failed",
+        );
         return Response.json({ ok: false, error: "invalid_signature" }, { status: 401 });
       }
       const payload = parseJson(body);
@@ -45,10 +57,25 @@ export default defineChannel({
       const config = loadConfig();
       const policy = findRepoPolicy(config, event.provider, event.repoSlug);
       if (policy === undefined) {
+        log.debug(
+          { provider: event.provider, repoSlug: event.repoSlug },
+          "gitlab event ignored: repo not configured",
+        );
         return Response.json({ ok: true, ignored: true, reason: "repo_not_configured" });
       }
       if (verification === "secret_token" && !policy.allowGitlabSecretTokenFallback) {
+        log.warn(
+          { provider: event.provider, repoSlug: event.repoSlug },
+          "gitlab secret-token fallback rejected by policy (allowGitlabSecretTokenFallback=false)",
+        );
         return Response.json({ ok: false, error: "invalid_signature" }, { status: 401 });
+      }
+      if (verification === "secret_token") {
+        // Expected path when policy opts into the fallback; debug, not warn.
+        log.debug(
+          { provider: event.provider, repoSlug: event.repoSlug },
+          "gitlab webhook accepted via secret-token fallback (weaker than signature)",
+        );
       }
       return dispatchPipelineEvent(event, send, waitUntil);
     }),
@@ -64,59 +91,80 @@ async function dispatchPipelineEvent(
   const config = loadConfig();
   const policy = findRepoPolicy(config, event.provider, event.repoSlug);
   if (policy === undefined) {
+    log.debug(
+      { provider: event.provider, repoSlug: event.repoSlug },
+      "event ignored: repo not configured",
+    );
     return Response.json({ ok: true, ignored: true, reason: "repo_not_configured" });
   }
 
   const deliveryKey = `${event.provider}:${event.deliveryId}`;
+  // Correlate every line for this delivery; attemptKey is added below once a slot is claimed.
+  const dlog = log.child({
+    provider: event.provider,
+    repoSlug: event.repoSlug,
+    deliveryKey,
+    ref: event.ref,
+    sha: event.sha,
+    pipelineId: event.pipelineId,
+  });
+  dlog.debug({ conclusion: event.conclusion }, "pipeline webhook received");
+
   if (!markDeliveryProcessed(config.statePath, deliveryKey, "pending")) {
+    dlog.debug("delivery ignored: duplicate delivery already processed");
     return Response.json({ ok: true, ignored: true, reason: "duplicate_delivery" });
   }
 
   if (isSuccessfulConclusion(event.conclusion)) {
+    dlog.info("successful pipeline: queuing auto-merge followup");
     waitUntil(
-      handleSuccessfulPipeline(event, policy).catch((error: unknown) => {
-        console.error(
-          `[ci] handleSuccessfulPipeline failed (deliveryKey=${deliveryKey}):`,
-          error,
-        );
+      handleSuccessfulPipeline(event, policy, dlog).catch((error: unknown) => {
+        logError(dlog, "auto-merge followup failed; pendingAutoMerge restored for retry", error);
       }),
     );
     return Response.json({ ok: true, accepted: true, action: "success_followup" });
   }
 
   if (!isFailedConclusion(event.conclusion)) {
+    dlog.debug({ conclusion: event.conclusion }, "event ignored: non-failure completion");
     return Response.json({ ok: true, ignored: true, reason: "non_failure_completion" });
   }
 
   try {
     assertEventAllowedByPolicy(event, policy);
   } catch (error) {
-    return Response.json(
-      { ok: true, ignored: true, reason: error instanceof Error ? error.message : String(error) },
-      { status: 202 },
-    );
+    const reason = error instanceof Error ? error.message : String(error);
+    // Intentionally info (not debug like repo_not_configured/duplicate): this is a
+    // configured repo whose failing pipeline we declined to fix, which operators may
+    // want to act on (e.g. widen allowedBranches).
+    dlog.info({ reason }, "event rejected by repository policy");
+    return Response.json({ ok: true, ignored: true, reason }, { status: 202 });
   }
 
   const claim = await claimRepairSlot(config.statePath, event, policy);
   if (claim.decision === "in_progress") {
+    dlog.info(
+      { attemptKey: claim.attempt.key },
+      "repair slot not claimed: a repair is already in progress",
+    );
     return Response.json(
       { ok: true, ignored: true, reason: "repair_already_in_progress", attemptKey: claim.attempt.key },
       { status: 202 },
     );
   }
   if (claim.decision === "max_attempts") {
+    dlog.info("repair slot not claimed: max attempts per sha exceeded");
     return Response.json({ ok: true, ignored: true, reason: "max_attempts_exceeded" }, { status: 202 });
   }
 
   const attempt = claim.attempt;
   const continuationToken = eventAttemptKey(event);
+  const alog = dlog.child({ attemptKey: attempt.key });
+  alog.info({ attempt: attempt.attempts }, "repair slot claimed: dispatching repair session");
   waitUntil(
     startRepairSession({ event, policy, attemptKey: attempt.key, continuationToken, deliveryKey, send }).catch(
       (error: unknown) => {
-        console.error(
-          `[ci] startRepairSession failed (attemptKey=${attempt.key}, deliveryKey=${deliveryKey}):`,
-          error,
-        );
+        logError(alog, "repair session start failed; delivery released for retry", error);
       },
     ),
   );
@@ -133,8 +181,14 @@ async function startRepairSession(input: {
   send: SendFn;
 }): Promise<void> {
   const config = loadConfig();
+  const slog = log.child({
+    provider: input.event.provider,
+    repoSlug: input.event.repoSlug,
+    deliveryKey: input.deliveryKey,
+    attemptKey: input.attemptKey,
+  });
   try {
-    const failureContext = await loadFailureContext(input.event);
+    const failureContext = await loadFailureContext(input.event, slog);
     updateAttempt(config.statePath, input.attemptKey, { lastFailureContext: failureContext });
     const session = await input.send(
       {
@@ -157,21 +211,23 @@ async function startRepairSession(input: {
       },
     );
     updateAttempt(config.statePath, input.attemptKey, { lastSessionId: session.id });
+    slog.info({ sessionId: session.id }, "repair session seeded; model turn started");
   } catch (error) {
-    console.error(
-      `[ci] repair session start failed (attemptKey=${input.attemptKey}, deliveryKey=${input.deliveryKey}):`,
-      error,
-    );
     // Clear the dispatch marker so the slot is no longer treated as in progress, then
     // release the delivery so a provider redelivery can retry instead of being dropped
-    // as a duplicate_delivery; otherwise the event is black-holed.
+    // as a duplicate_delivery; otherwise the event is black-holed. The error itself is
+    // logged once by the dispatch-level catch with full correlation context.
     updateAttempt(config.statePath, input.attemptKey, { dispatchedAt: undefined });
     await releaseDelivery(config.statePath, input.deliveryKey);
     throw error;
   }
 }
 
-async function handleSuccessfulPipeline(event: NormalizedPipelineEvent, policy: RepoPolicy): Promise<void> {
+async function handleSuccessfulPipeline(
+  event: NormalizedPipelineEvent,
+  policy: RepoPolicy,
+  parentLog: Logger,
+): Promise<void> {
   if (policy.mode !== "auto_merge" || !policy.autoMerge.requireSuccessfulPipeline) return;
   const config = loadConfig();
   const attempt = findPendingAutoMergeAttempt(config.statePath, {
@@ -180,12 +236,19 @@ async function handleSuccessfulPipeline(event: NormalizedPipelineEvent, policy: 
     branch: event.ref,
     sha: event.sha,
   });
-  if (attempt?.changeNumber === undefined || attempt.publishedBranch === undefined) return;
+  if (attempt?.changeNumber === undefined || attempt.publishedBranch === undefined) {
+    parentLog.debug("no pending auto-merge attempt matches this successful pipeline");
+    return;
+  }
   const changeNumber = attempt.changeNumber;
   const branch = attempt.publishedBranch;
+  const mlog = parentLog.child({ attemptKey: attempt.key, changeNumber });
   // Claim the auto-merge before calling the provider so a concurrent success event
   // cannot merge the same change twice; restore the flag if the merge throws.
-  if (!(await claimAutoMerge(config.statePath, attempt.key))) return;
+  if (!(await claimAutoMerge(config.statePath, attempt.key))) {
+    mlog.debug("auto-merge already claimed by a concurrent event; skipping");
+    return;
+  }
   try {
     const result = await getProviderClient(event.provider).mergeChange({
       event,
@@ -196,21 +259,28 @@ async function handleSuccessfulPipeline(event: NormalizedPipelineEvent, policy: 
     updateAttempt(config.statePath, attempt.key, {
       lastPublishResult: result,
     });
+    mlog.info({ merged: result.merged }, "auto-merge completed");
   } catch (error) {
-    console.error(
-      `[ci] auto-merge failed; restoring pendingAutoMerge (attemptKey=${attempt.key}, deliveryKey=${event.provider}:${event.deliveryId}):`,
-      error,
-    );
     // Restore the claim so a later successful pipeline event can retry the merge.
+    // The error is logged once by the dispatch-level catch with full correlation context.
     await restoreAutoMergeClaim(config.statePath, attempt.key);
     throw error;
   }
 }
 
-async function loadFailureContext(event: NormalizedPipelineEvent): Promise<FailureContext | { error: string }> {
+async function loadFailureContext(
+  event: NormalizedPipelineEvent,
+  log: Logger,
+): Promise<FailureContext | { error: string }> {
   try {
     return await getProviderClient(event.provider).getFailureContext(event);
   } catch (error) {
+    // The provider error is redacted by the logger; surface it so operators see why
+    // the model was seeded with an error block instead of failure logs.
+    log.warn(
+      { err: error instanceof Error ? error : String(error) },
+      "failed to collect initial failure context; seeding model with error block",
+    );
     return { error: error instanceof Error ? error.message : String(error) };
   }
 }

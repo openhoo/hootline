@@ -157,6 +157,39 @@ The generated app requests these repository permissions: Actions write, Checks
 read, Contents write, Issues write, Metadata read, and Pull requests write. It
 subscribes to `workflow_run` and `check_suite` events.
 
+## Logging
+
+Hootline emits structured logs through a small pino-based logger
+(`agent/lib/logger.ts`). Every dynamic value is passed through the secret
+redaction in `agent/lib/redact.ts` before it is written, so tokens, signatures,
+private keys, and other secret-looking text never reach the log sink.
+
+- **Level**: set `PIPELINE_FIXER_LOG_LEVEL` to one of
+  `trace|debug|info|warn|error|fatal|silent` (default `info`). `EVE_LOG_LEVEL`
+  separately controls Eve's own framework logs.
+- **Format**: pretty, colorized output when stdout is a TTY (local dev);
+  newline-delimited JSON otherwise (production/CI), suitable for log aggregators.
+- **Namespaces**: every line carries an `ns` field — `channels.ci`,
+  `tools.<name>`, `providers.github` / `providers.gitlab`, `lib.config`,
+  `lib.sandbox`.
+- **Correlation**: repair-lifecycle lines carry `attemptKey` (plus `provider`,
+  `repoSlug`, `deliveryKey`) so one pipeline repair can be traced end-to-end —
+  from webhook receipt, through tool calls, to publish/merge. Before a repair
+  slot is claimed, lines correlate on `deliveryKey`.
+- **Errors**: failures are logged with a stable `errorId` (via `logError`) that
+  is safe to surface in user-facing messages for support correlation.
+
+Example line (JSON mode):
+
+```json
+{"level":30,"ns":"channels.ci","provider":"github","repoSlug":"org/repo","deliveryKey":"github:abc","attemptKey":"github:org/repo:sha:99","msg":"repair slot claimed: dispatching repair session"}
+```
+
+The `test` script runs with `PIPELINE_FIXER_LOG_LEVEL=silent` so application
+logs do not interleave with test output. Observability of the model loop itself
+(turns, steps, tool spans) is available separately through Eve's
+`eve/instrumentation` OpenTelemetry hook and is not wired up here.
+
 ## Loop Design
 
 ### Context contract

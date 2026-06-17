@@ -1,5 +1,6 @@
 import { createSign } from "node:crypto";
 
+import { createLogger } from "../logger.ts";
 import { redact } from "../redact.ts";
 import { validateChangesAgainstPolicy } from "../sandbox.ts";
 import { isFailureStatus } from "../webhooks.ts";
@@ -42,6 +43,8 @@ interface GitHubTreeEntry {
 }
 
 const tokenCache = new Map<string, CachedToken>();
+
+const log = createLogger("providers.github");
 
 export class GitHubProvider implements ProviderClient {
   async getFailureContext(event: NormalizedPipelineEvent): Promise<FailureContext> {
@@ -396,6 +399,8 @@ export class GitHubProvider implements ProviderClient {
     headers: Record<string, string> = {},
     timeoutMs: number = PROVIDER_REQUEST_TIMEOUT_MS,
   ): Promise<Response> {
+    // The path carries no credentials (the token is in the Authorization header).
+    log.debug({ repoSlug: event.repoSlug, method, path }, "github api request");
     const token = await getInstallationToken(event);
     const init: RequestInit = {
       method,
