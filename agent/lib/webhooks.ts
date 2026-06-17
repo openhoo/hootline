@@ -5,6 +5,8 @@ import { isRecord, readNumber, readString, type UnknownRecord } from "./unknown.
 
 export type GitLabWebhookVerification = "standard" | "secret_token" | "none";
 
+const GITLAB_WEBHOOK_TOLERANCE_SECONDS = 300;
+
 export function verifyGitHubWebhook(body: string, headers: Headers): boolean {
   const secret = process.env.GITHUB_WEBHOOK_SECRET;
   if (!secret) throw new Error("GITHUB_WEBHOOK_SECRET is required.");
@@ -47,6 +49,9 @@ export function verifyGitLabStandardWebhook(
   timestamp: string,
   receivedSignatures: string,
 ): boolean {
+  const timestampSeconds = Number.parseInt(timestamp, 10);
+  if (!Number.isFinite(timestampSeconds)) return false;
+  if (Math.abs(Date.now() / 1000 - timestampSeconds) > GITLAB_WEBHOOK_TOLERANCE_SECONDS) return false;
   const rawKey = Buffer.from(signingToken.replace(/^whsec_/, ""), "base64");
   const message = `${messageId}.${timestamp}.${body}`;
   const expected = `v1,${createHmac("sha256", rawKey).update(message).digest("base64")}`;
@@ -185,14 +190,31 @@ function normalizeGitHubCheckSuite(
   };
 }
 
+export const FAILURE_STATUSES: ReadonlySet<string> = new Set([
+  "failure",
+  "failed",
+  "timed_out",
+  "cancelled",
+  "canceled",
+  "action_required",
+]);
+
+export const SUCCESS_STATUSES: ReadonlySet<string> = new Set(["success", "passed"]);
+
+export function isFailureStatus(value: string): boolean {
+  return FAILURE_STATUSES.has(value.toLowerCase());
+}
+
+export function isSuccessStatus(value: string): boolean {
+  return SUCCESS_STATUSES.has(value.toLowerCase());
+}
+
 export function isFailedConclusion(value: string): boolean {
-  return ["failure", "failed", "timed_out", "cancelled", "canceled", "action_required"].includes(
-    value.toLowerCase(),
-  );
+  return isFailureStatus(value);
 }
 
 export function isSuccessfulConclusion(value: string): boolean {
-  return ["success", "passed"].includes(value.toLowerCase());
+  return isSuccessStatus(value);
 }
 
 function constantTimeEqual(expected: string, received: string): boolean {

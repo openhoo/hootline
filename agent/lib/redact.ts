@@ -7,6 +7,11 @@ const SECRET_PATTERNS = [
   /gh[opsu]_[A-Za-z0-9_]+/g,
   /ghs_[A-Za-z0-9_]+/g,
   /glpat-[A-Za-z0-9_-]+/g,
+  /github_pat_[A-Za-z0-9_]+/g,
+  /gl(?:cbt|rt|ptt|soat|deploy)-[A-Za-z0-9_-]+/g,
+  /A(?:KIA|SIA)[A-Z0-9]{16}/g,
+  /xox[baprs]-[A-Za-z0-9-]+/g,
+  /-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----/g,
 ];
 
 export function redact(value: string, maxLength = 12000): string {

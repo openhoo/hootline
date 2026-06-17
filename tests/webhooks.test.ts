@@ -84,7 +84,9 @@ test("verifies and normalizes a GitLab Standard Webhooks pipeline event", () => 
   const rawSecret = Buffer.from("standard-webhook-secret").toString("base64");
   const signingToken = `whsec_${rawSecret}`;
   const messageId = "msg-1";
-  const timestamp = "1710000000";
+  // Use a fresh timestamp: verifyGitLabStandardWebhook now enforces a replay window
+  // (GITLAB_WEBHOOK_TOLERANCE_SECONDS), so a hardcoded stale timestamp would be rejected.
+  const timestamp = Math.floor(Date.now() / 1000).toString();
   const signature = `v1,${createHmac("sha256", Buffer.from(rawSecret, "base64"))
     .update(`${messageId}.${timestamp}.${body}`)
     .digest("base64")}`;
@@ -119,6 +121,154 @@ test("verifies and normalizes a GitLab Standard Webhooks pipeline event", () => 
   assert.equal(event?.mergeRequestIid, 7);
   assert.equal(event?.targetBranch, "main");
   assert.equal(isFailedConclusion(event?.conclusion ?? ""), true);
+});
+
+test("rejects GitHub webhooks with a tampered body, wrong secret, or missing signature", () => {
+  const previousSecret = process.env.GITHUB_WEBHOOK_SECRET;
+  process.env.GITHUB_WEBHOOK_SECRET = "github-secret";
+  try {
+    const body = JSON.stringify({ action: "completed", workflow_run: { id: 1001 } });
+    const signature = `sha256=${createHmac("sha256", "github-secret").update(body).digest("hex")}`;
+
+    // Mutate a single byte of the body so the signature no longer matches.
+    const tamperedBody = `${body.slice(0, -1)} `;
+    assert.notEqual(tamperedBody, body);
+    assert.equal(tamperedBody.length, body.length);
+    assert.equal(
+      verifyGitHubWebhook(
+        tamperedBody,
+        new Headers({ "x-hub-signature-256": signature }),
+      ),
+      false,
+    );
+
+    // A signature computed with a different secret must not verify.
+    const wrongSignature = `sha256=${createHmac("sha256", "different-secret").update(body).digest("hex")}`;
+    assert.equal(
+      verifyGitHubWebhook(body, new Headers({ "x-hub-signature-256": wrongSignature })),
+      false,
+    );
+
+    // A missing x-hub-signature-256 header must not verify.
+    assert.equal(verifyGitHubWebhook(body, new Headers()), false);
+  } finally {
+    if (previousSecret === undefined) {
+      delete process.env.GITHUB_WEBHOOK_SECRET;
+    } else {
+      process.env.GITHUB_WEBHOOK_SECRET = previousSecret;
+    }
+  }
+});
+
+test("verifyGitHubWebhook throws when GITHUB_WEBHOOK_SECRET is unset", () => {
+  const previousSecret = process.env.GITHUB_WEBHOOK_SECRET;
+  delete process.env.GITHUB_WEBHOOK_SECRET;
+  try {
+    assert.throws(
+      () => verifyGitHubWebhook("{}", new Headers({ "x-hub-signature-256": "sha256=deadbeef" })),
+      /GITHUB_WEBHOOK_SECRET is required\./,
+    );
+  } finally {
+    if (previousSecret === undefined) {
+      delete process.env.GITHUB_WEBHOOK_SECRET;
+    } else {
+      process.env.GITHUB_WEBHOOK_SECRET = previousSecret;
+    }
+  }
+});
+
+test("rejects GitLab Standard Webhooks with a wrong token or tampered fields", () => {
+  const body = JSON.stringify({ object_kind: "pipeline", object_attributes: { id: 2002 } });
+  const rawSecret = Buffer.from("standard-webhook-secret").toString("base64");
+  const signingToken = `whsec_${rawSecret}`;
+  const messageId = "msg-1";
+  const timestamp = Math.floor(Date.now() / 1000).toString();
+  const sign = (id: string, ts: string, payload: string): string =>
+    `v1,${createHmac("sha256", Buffer.from(rawSecret, "base64"))
+      .update(`${id}.${ts}.${payload}`)
+      .digest("base64")}`;
+  const signature = sign(messageId, timestamp, body);
+
+  // Sanity check: the well-formed signature verifies.
+  assert.equal(verifyGitLabStandardWebhook(body, signingToken, messageId, timestamp, signature), true);
+
+  // A different signing token must not verify.
+  const wrongRawSecret = Buffer.from("other-webhook-secret").toString("base64");
+  assert.equal(
+    verifyGitLabStandardWebhook(body, `whsec_${wrongRawSecret}`, messageId, timestamp, signature),
+    false,
+  );
+
+  // A tampered messageId, timestamp, or body must not verify against the original signature.
+  assert.equal(
+    verifyGitLabStandardWebhook(body, signingToken, "msg-2", timestamp, signature),
+    false,
+  );
+  const newerTimestamp = (Number.parseInt(timestamp, 10) + 1).toString();
+  assert.equal(
+    verifyGitLabStandardWebhook(body, signingToken, messageId, newerTimestamp, signature),
+    false,
+  );
+  const tamperedBody = JSON.stringify({ object_kind: "pipeline", object_attributes: { id: 9999 } });
+  // The original signature does not cover the tampered body.
+  assert.equal(
+    verifyGitLabStandardWebhook(tamperedBody, signingToken, messageId, timestamp, signature),
+    false,
+  );
+
+  // A space-delimited multi-signature header verifies when ANY token is valid.
+  const multiValidSecond = `${sign(messageId, timestamp, tamperedBody)} ${signature}`;
+  assert.equal(
+    verifyGitLabStandardWebhook(body, signingToken, messageId, timestamp, multiValidSecond),
+    true,
+  );
+  const multiAllBad = `${sign(messageId, timestamp, tamperedBody)} ${sign("msg-2", timestamp, body)}`;
+  assert.equal(
+    verifyGitLabStandardWebhook(body, signingToken, messageId, timestamp, multiAllBad),
+    false,
+  );
+});
+
+test("rejects a GitLab Standard Webhook with a stale timestamp beyond the replay window", () => {
+  const body = JSON.stringify({ object_kind: "pipeline", object_attributes: { id: 2002 } });
+  const rawSecret = Buffer.from("standard-webhook-secret").toString("base64");
+  const signingToken = `whsec_${rawSecret}`;
+  const messageId = "msg-1";
+  // ~10 minutes old, well beyond the 300s tolerance, but otherwise a valid signature.
+  const staleTimestamp = (Math.floor(Date.now() / 1000) - 600).toString();
+  const signature = `v1,${createHmac("sha256", Buffer.from(rawSecret, "base64"))
+    .update(`${messageId}.${staleTimestamp}.${body}`)
+    .digest("base64")}`;
+
+  assert.equal(
+    verifyGitLabStandardWebhook(body, signingToken, messageId, staleTimestamp, signature),
+    false,
+  );
+});
+
+test("verifyGitLabWebhookRequest returns none without standard headers or x-gitlab-token", () => {
+  const previousSigningToken = process.env.GITLAB_SIGNING_TOKEN;
+  const previousSecretToken = process.env.GITLAB_SECRET_TOKEN;
+  delete process.env.GITLAB_SIGNING_TOKEN;
+  delete process.env.GITLAB_SECRET_TOKEN;
+  try {
+    const body = JSON.stringify({ object_kind: "pipeline" });
+    assert.equal(
+      verifyGitLabWebhookRequest(body, new Headers({ "x-gitlab-event": "Pipeline Hook" })),
+      "none",
+    );
+  } finally {
+    if (previousSigningToken === undefined) {
+      delete process.env.GITLAB_SIGNING_TOKEN;
+    } else {
+      process.env.GITLAB_SIGNING_TOKEN = previousSigningToken;
+    }
+    if (previousSecretToken === undefined) {
+      delete process.env.GITLAB_SECRET_TOKEN;
+    } else {
+      process.env.GITLAB_SECRET_TOKEN = previousSecretToken;
+    }
+  }
 });
 
 test("classifies GitLab legacy token verification without trusting payload policy first", () => {

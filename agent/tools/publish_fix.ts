@@ -1,25 +1,18 @@
 import { defineTool } from "eve/tools";
 
-import { assertSnapshotStaged, resolveCurrentAttempt } from "../lib/current.ts";
+import { resolveStagedAttempt } from "../lib/current.ts";
 import { getProviderClient } from "../lib/providers/index.ts";
 import { redact } from "../lib/redact.ts";
-import {
-  assertSandboxSnapshotReady,
-  collectSandboxChanges,
-  runVerificationCommandsWithPolicy,
-} from "../lib/sandbox.ts";
+import { collectSandboxChanges, runVerificationCommandsWithPolicy } from "../lib/sandbox.ts";
 import { updateAttempt } from "../lib/state.ts";
-import { readOptionalString, readRequiredString, summarySchema } from "../lib/tool-input.ts";
+import { readRequiredString, summarySchema } from "../lib/tool-input.ts";
 
 export default defineTool({
   description:
     "Publish verified sandbox changes according to repository policy. This tool reruns configured checks before publishing and rejects disallowed file paths.",
   inputSchema: summarySchema,
   async execute(input, ctx) {
-    const { config, attempt, policy } = resolveCurrentAttempt(ctx, readOptionalString(input, "attemptKey"));
-    assertSnapshotStaged(attempt);
-    const sandbox = await ctx.getSandbox();
-    await assertSandboxSnapshotReady(sandbox, attempt);
+    const { config, attempt, policy, sandbox } = await resolveStagedAttempt(ctx, input);
     const verification = await runVerificationCommandsWithPolicy(sandbox, policy);
     updateAttempt(config.statePath, attempt.key, { lastVerification: verification });
     if (!verification.ok) {

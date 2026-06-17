@@ -13,14 +13,22 @@ export default defineTool({
   inputSchema: optionalAttemptKeySchema,
   async execute(input, ctx) {
     const { config, attempt, policy } = resolveCurrentAttempt(ctx, readOptionalString(input, "attemptKey"));
-    const archive = await getProviderClient(attempt.event.provider).downloadArchive(attempt.event);
+    const archive = await getProviderClient(attempt.event.provider).downloadArchive(
+      attempt.event,
+      policy.maxSnapshotBytes,
+    );
     if (archive.byteLength > policy.maxSnapshotBytes) {
       throw new Error(
         `Repository archive is ${archive.byteLength} bytes, above policy limit ${policy.maxSnapshotBytes}.`,
       );
     }
     const sandbox = await ctx.getSandbox();
-    const staged = await extractTarGzToSandbox({ archive, sandbox, targetDir: "repo" });
+    const staged = await extractTarGzToSandbox({
+      archive,
+      sandbox,
+      targetDir: "repo",
+      maxBytes: policy.maxSnapshotBytes,
+    });
     await writeSnapshotMarker(sandbox, attempt);
     updateAttempt(config.statePath, attempt.key, {
       repoStagedAt: new Date().toISOString(),

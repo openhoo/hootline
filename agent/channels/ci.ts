@@ -4,12 +4,13 @@ import { findRepoPolicy, loadConfig } from "../lib/config.ts";
 import { assertEventAllowedByPolicy } from "../lib/policy.ts";
 import { getProviderClient } from "../lib/providers/index.ts";
 import {
-  countAttemptsForSha,
+  claimAutoMerge,
+  claimRepairSlot,
   eventAttemptKey,
-  findActiveRepairAttemptForSha,
   findPendingAutoMergeAttempt,
   markDeliveryProcessed,
-  recordAttempt,
+  releaseDelivery,
+  restoreAutoMergeClaim,
   updateAttempt,
 } from "../lib/state.ts";
 import type { FailureContext, NormalizedPipelineEvent, RepoPolicy } from "../lib/types.ts";
@@ -72,7 +73,14 @@ async function dispatchPipelineEvent(
   }
 
   if (isSuccessfulConclusion(event.conclusion)) {
-    waitUntil(handleSuccessfulPipeline(event, policy));
+    waitUntil(
+      handleSuccessfulPipeline(event, policy).catch((error: unknown) => {
+        console.error(
+          `[ci] handleSuccessfulPipeline failed (deliveryKey=${deliveryKey}):`,
+          error,
+        );
+      }),
+    );
     return Response.json({ ok: true, accepted: true, action: "success_followup" });
   }
 
@@ -89,30 +97,29 @@ async function dispatchPipelineEvent(
     );
   }
 
-  const activeRepair = findActiveRepairAttemptForSha(config.statePath, {
-    provider: event.provider,
-    repoSlug: event.repoSlug,
-    sha: event.sha,
-  });
-  if (activeRepair !== undefined) {
+  const claim = await claimRepairSlot(config.statePath, event, policy);
+  if (claim.decision === "in_progress") {
     return Response.json(
-      { ok: true, ignored: true, reason: "repair_already_in_progress", attemptKey: activeRepair.key },
+      { ok: true, ignored: true, reason: "repair_already_in_progress", attemptKey: claim.attempt.key },
       { status: 202 },
     );
   }
-
-  const attempt = recordAttempt(config.statePath, event);
-  const attemptsForSha = countAttemptsForSha(config.statePath, {
-    provider: event.provider,
-    repoSlug: event.repoSlug,
-    sha: event.sha,
-  });
-  if (attemptsForSha > policy.maxAttemptsPerSha) {
+  if (claim.decision === "max_attempts") {
     return Response.json({ ok: true, ignored: true, reason: "max_attempts_exceeded" }, { status: 202 });
   }
 
+  const attempt = claim.attempt;
   const continuationToken = eventAttemptKey(event);
-  waitUntil(startRepairSession({ event, policy, attemptKey: attempt.key, continuationToken, send }));
+  waitUntil(
+    startRepairSession({ event, policy, attemptKey: attempt.key, continuationToken, deliveryKey, send }).catch(
+      (error: unknown) => {
+        console.error(
+          `[ci] startRepairSession failed (attemptKey=${attempt.key}, deliveryKey=${deliveryKey}):`,
+          error,
+        );
+      },
+    ),
+  );
 
   return Response.json({ ok: true, accepted: true, attempt: attempt.attempts });
 }
@@ -122,32 +129,46 @@ async function startRepairSession(input: {
   policy: RepoPolicy;
   attemptKey: string;
   continuationToken: string;
+  deliveryKey: string;
   send: SendFn;
 }): Promise<void> {
   const config = loadConfig();
-  const failureContext = await loadFailureContext(input.event);
-  updateAttempt(config.statePath, input.attemptKey, { lastFailureContext: failureContext });
-  const session = await input.send(
-    {
-      message: buildPrompt(input.policy.mode),
-      context: buildSeedContext(input.event, input.policy, input.attemptKey, failureContext),
-    },
-    {
-      auth: {
-        authenticator: input.event.provider,
-        principalId: input.event.actor ?? "pipeline-webhook",
-        principalType: "service",
-        attributes: {
-          provider: input.event.provider,
-          repo: input.event.repoSlug,
-          pipelineId: input.event.pipelineId,
-          attemptKey: input.attemptKey,
-        },
+  try {
+    const failureContext = await loadFailureContext(input.event);
+    updateAttempt(config.statePath, input.attemptKey, { lastFailureContext: failureContext });
+    const session = await input.send(
+      {
+        message: buildPrompt(input.policy.mode),
+        context: buildSeedContext(input.event, input.policy, input.attemptKey, failureContext),
       },
-      continuationToken: input.continuationToken,
-    },
-  );
-  updateAttempt(config.statePath, input.attemptKey, { lastSessionId: session.id });
+      {
+        auth: {
+          authenticator: input.event.provider,
+          principalId: input.event.actor ?? "pipeline-webhook",
+          principalType: "service",
+          attributes: {
+            provider: input.event.provider,
+            repo: input.event.repoSlug,
+            pipelineId: input.event.pipelineId,
+            attemptKey: input.attemptKey,
+          },
+        },
+        continuationToken: input.continuationToken,
+      },
+    );
+    updateAttempt(config.statePath, input.attemptKey, { lastSessionId: session.id });
+  } catch (error) {
+    console.error(
+      `[ci] repair session start failed (attemptKey=${input.attemptKey}, deliveryKey=${input.deliveryKey}):`,
+      error,
+    );
+    // Clear the dispatch marker so the slot is no longer treated as in progress, then
+    // release the delivery so a provider redelivery can retry instead of being dropped
+    // as a duplicate_delivery; otherwise the event is black-holed.
+    updateAttempt(config.statePath, input.attemptKey, { dispatchedAt: undefined });
+    await releaseDelivery(config.statePath, input.deliveryKey);
+    throw error;
+  }
 }
 
 async function handleSuccessfulPipeline(event: NormalizedPipelineEvent, policy: RepoPolicy): Promise<void> {
@@ -160,16 +181,30 @@ async function handleSuccessfulPipeline(event: NormalizedPipelineEvent, policy: 
     sha: event.sha,
   });
   if (attempt?.changeNumber === undefined || attempt.publishedBranch === undefined) return;
-  const result = await getProviderClient(event.provider).mergeChange({
-    event,
-    changeNumber: attempt.changeNumber,
-    branch: attempt.publishedBranch,
-    deleteSourceBranch: policy.autoMerge.deleteSourceBranch,
-  });
-  updateAttempt(config.statePath, attempt.key, {
-    lastPublishResult: result,
-    pendingAutoMerge: false,
-  });
+  const changeNumber = attempt.changeNumber;
+  const branch = attempt.publishedBranch;
+  // Claim the auto-merge before calling the provider so a concurrent success event
+  // cannot merge the same change twice; restore the flag if the merge throws.
+  if (!(await claimAutoMerge(config.statePath, attempt.key))) return;
+  try {
+    const result = await getProviderClient(event.provider).mergeChange({
+      event,
+      changeNumber,
+      branch,
+      deleteSourceBranch: policy.autoMerge.deleteSourceBranch,
+    });
+    updateAttempt(config.statePath, attempt.key, {
+      lastPublishResult: result,
+    });
+  } catch (error) {
+    console.error(
+      `[ci] auto-merge failed; restoring pendingAutoMerge (attemptKey=${attempt.key}, deliveryKey=${event.provider}:${event.deliveryId}):`,
+      error,
+    );
+    // Restore the claim so a later successful pipeline event can retry the merge.
+    await restoreAutoMergeClaim(config.statePath, attempt.key);
+    throw error;
+  }
 }
 
 async function loadFailureContext(event: NormalizedPipelineEvent): Promise<FailureContext | { error: string }> {

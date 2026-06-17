@@ -1,7 +1,9 @@
 import { redact } from "../redact.ts";
+import { validateChangesAgainstPolicy } from "../sandbox.ts";
 import type {
   FailedJobLog,
   FailureContext,
+  MergeChangeInput,
   NormalizedPipelineEvent,
   PublishInput,
   PublishResult,
@@ -11,7 +13,12 @@ import {
   assertResponseOk,
   buildFixBranchName,
   isRecord,
+  MAX_LOG_BYTES,
   parseJsonResponse,
+  PROVIDER_DOWNLOAD_TIMEOUT_MS,
+  PROVIDER_REQUEST_TIMEOUT_MS,
+  readBodyWithCap,
+  readCappedText,
   readNumber,
   readString,
   requireArray,
@@ -39,20 +46,31 @@ export class GitLabProvider implements ProviderClient {
     return { event, jobs, summary };
   }
 
-  async downloadArchive(event: NormalizedPipelineEvent): Promise<Buffer> {
+  async downloadArchive(event: NormalizedPipelineEvent, maxSnapshotBytes: number): Promise<Buffer> {
     const response = await this.requestRaw(
       event,
       "GET",
       `/projects/${encodeProject(event)}/repository/archive.tar.gz?sha=${encodeURIComponent(event.sha)}`,
+      undefined,
+      PROVIDER_DOWNLOAD_TIMEOUT_MS,
     );
     if (!response.ok) {
       const body = await response.text();
       throw new Error(`GitLab archive download failed with HTTP ${response.status}: ${redact(body, 4000)}`);
     }
-    return Buffer.from(await response.arrayBuffer());
+    const contentLength = Number(response.headers.get("content-length"));
+    if (Number.isFinite(contentLength) && contentLength > maxSnapshotBytes) {
+      throw new Error(
+        redact(
+          `GitLab archive is ${contentLength} bytes, above policy limit ${maxSnapshotBytes}.`,
+        ),
+      );
+    }
+    return readBodyWithCap(response, maxSnapshotBytes);
   }
 
   async publishFix(input: PublishInput): Promise<PublishResult> {
+    validateChangesAgainstPolicy(input.changes, input.policy);
     const branch = buildFixBranchName(input.policy.fixBranchPrefix, input.event);
     await this.ensureBranch(input.event, branch, input.event.sha);
     const commit = await this.createCommit(input.event, branch, input.changes, input.summary);
@@ -108,12 +126,7 @@ export class GitLabProvider implements ProviderClient {
     return { message: `Requested retry for GitLab pipeline ${event.pipelineId}.` };
   }
 
-  async mergeChange(input: {
-    event: NormalizedPipelineEvent;
-    changeNumber: number;
-    branch: string;
-    deleteSourceBranch: boolean;
-  }): Promise<PublishResult> {
+  async mergeChange(input: MergeChangeInput): Promise<PublishResult> {
     const body = await this.requestRecord(
       input.event,
       "PUT",
@@ -164,9 +177,11 @@ export class GitLabProvider implements ProviderClient {
       event,
       "GET",
       `/projects/${encodeProject(event)}/jobs/${jobId}/trace`,
+      undefined,
+      PROVIDER_DOWNLOAD_TIMEOUT_MS,
     );
     if (!response.ok) return `GitLab trace fetch failed with HTTP ${response.status}.`;
-    return response.text();
+    return readCappedText(response, MAX_LOG_BYTES);
   }
 
   private async ensureBranch(
@@ -314,6 +329,7 @@ export class GitLabProvider implements ProviderClient {
     method: string,
     path: string,
     body?: unknown,
+    timeoutMs: number = PROVIDER_REQUEST_TIMEOUT_MS,
   ): Promise<Response> {
     const token = process.env.GITLAB_TOKEN;
     if (!token) throw new Error("GITLAB_TOKEN is required.");
@@ -324,10 +340,26 @@ export class GitLabProvider implements ProviderClient {
         "content-type": "application/json",
         "private-token": token,
       },
+      signal: AbortSignal.timeout(timeoutMs),
     };
     if (body !== undefined) init.body = JSON.stringify(body);
-    return fetch(`${baseUrl.replace(/\/$/, "")}/api/v4${path}`, init);
+    return fetchWithTimeout(`${baseUrl.replace(/\/$/, "")}/api/v4${path}`, init, timeoutMs);
   }
+}
+
+async function fetchWithTimeout(url: string, init: RequestInit, timeoutMs: number): Promise<Response> {
+  try {
+    return await fetch(url, init);
+  } catch (error) {
+    if (isTimeoutError(error)) {
+      throw new Error(redact(`GitLab request timed out after ${timeoutMs}ms`));
+    }
+    throw error;
+  }
+}
+
+function isTimeoutError(error: unknown): boolean {
+  return error instanceof Error && (error.name === "TimeoutError" || error.name === "AbortError");
 }
 
 function toGitLabCommitAction(change: SandboxChange, fileExists: boolean): GitLabCommitAction | null {
@@ -364,7 +396,12 @@ function buildChangeBody(event: NormalizedPipelineEvent, summary: string): strin
   ].join("\n");
 }
 
+// Intentional SUBSET of the canonical FAILURE_STATUSES (see webhooks.ts): GitLab job
+// statuses do not include "failure"/"action_required", so we deliberately do not widen
+// this to the shared isFailureStatus helper. Keep this list explicit.
+const GITLAB_FAILED_JOB_STATUSES = ["failed", "timed_out", "cancelled", "canceled"];
+
 function isFailedJob(job: UnknownRecord): boolean {
   const status = readString(job.status) ?? "";
-  return ["failed", "timed_out", "cancelled", "canceled"].includes(status.toLowerCase());
+  return GITLAB_FAILED_JOB_STATUSES.includes(status.toLowerCase());
 }

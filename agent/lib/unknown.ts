@@ -25,5 +25,20 @@ export function requireArray(value: unknown, label: string): unknown[] {
 function describeJsonType(value: unknown): string {
   if (value === null) return "null";
   if (Array.isArray(value)) return "an array";
-  return typeof value;
+  switch (typeof value) {
+    case "object":
+      return "an object";
+    case "number":
+      return "a number";
+    case "string":
+      return "a string";
+    case "boolean":
+      return "a boolean";
+    case "function":
+      return "a function";
+    case "undefined":
+      return "undefined";
+    default:
+      return `a ${typeof value}`;
+  }
 }

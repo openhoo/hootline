@@ -6,6 +6,8 @@ import test from "node:test";
 
 import { assertSnapshotStaged } from "../agent/lib/current.ts";
 import {
+  claimAutoMerge,
+  claimRepairSlot,
   claimRerunRequest,
   countAttemptsForSha,
   eventAttemptKey,
@@ -17,9 +19,11 @@ import {
   markDeliveryProcessed,
   recordAttempt,
   recordRerunResult,
+  releaseDelivery,
+  restoreAutoMergeClaim,
   updateAttempt,
 } from "../agent/lib/state.ts";
-import type { NormalizedPipelineEvent } from "../agent/lib/types.ts";
+import type { NormalizedPipelineEvent, RepoPolicy } from "../agent/lib/types.ts";
 
 test("records attempts, dedupes deliveries, and finds pending auto-merge changes", () => {
   const tempRoot = mkdtempSync(join(tmpdir(), "hootline-state-"));
@@ -110,6 +114,24 @@ test("finds active repair attempts for duplicate pipeline events without pinning
     const afterRecentWindow = new Date(now.getTime() + 1000);
     recordAttempt(statePath, event);
 
+    // A freshly recorded attempt with none of the started-work markers
+    // (lastSessionId / repoStagedAt / lastFailureContext / lastVerification) is NOT
+    // in progress, even within the recent window. The previous assertion expected the
+    // bare attempt to be returned here; that encoded the dead always-true branch in
+    // isActiveRepairAttempt and is corrected below to assert the never-started case is
+    // not active. Once a repair session actually starts (lastSessionId set), the
+    // attempt is reported active again within the window.
+    assert.equal(
+      findActiveRepairAttemptForSha(statePath, {
+        provider: "github",
+        repoSlug: "owner/repo",
+        sha: "abc123def456",
+        now,
+      }),
+      undefined,
+    );
+
+    updateAttempt(statePath, key, { lastSessionId: "session-active" });
     assert.equal(
       findActiveRepairAttemptForSha(statePath, {
         provider: "github",
@@ -319,6 +341,185 @@ test("normalizes persisted state without trusting malformed JSON fields", () => 
     rmSync(tempRoot, { recursive: true, force: true });
   }
 });
+
+test("does not report a freshly recorded attempt with no started-work markers as active", () => {
+  const tempRoot = mkdtempSync(join(tmpdir(), "hootline-state-"));
+  const statePath = join(tempRoot, "state.json");
+  try {
+    const event = makeEvent();
+    recordAttempt(statePath, event);
+
+    // A recorded-but-never-started attempt (no lastSessionId / repoStagedAt /
+    // lastFailureContext / lastVerification and no publish fields) must not count
+    // as an in-progress repair, even immediately after recording.
+    assert.equal(
+      findActiveRepairAttemptForSha(statePath, {
+        provider: "github",
+        repoSlug: "owner/repo",
+        sha: "abc123def456",
+        now: new Date(event.receivedAt),
+      }),
+      undefined,
+    );
+  } finally {
+    rmSync(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("claimRepairSlot records the first attempt and reports in_progress once started", async () => {
+  const tempRoot = mkdtempSync(join(tmpdir(), "hootline-state-"));
+  const statePath = join(tempRoot, "state.json");
+  try {
+    const event = makeEvent();
+    const key = eventAttemptKey(event);
+    const policy = makePolicy({ maxAttemptsPerSha: 3 });
+
+    const first = await claimRepairSlot(statePath, event, policy);
+    assert.equal(first.decision, "accepted");
+    assert.equal(first.decision === "accepted" ? first.attempt.key : undefined, key);
+    assert.equal(getAttempt(statePath, key)?.attempts, 1);
+
+    // claimRepairSlot marks the slot dispatched in its critical section, so a second
+    // event for the same sha is immediately deduped as in_progress and records nothing.
+    const second = await claimRepairSlot(statePath, event, policy);
+    assert.equal(second.decision, "in_progress");
+    assert.equal(second.decision === "in_progress" ? second.attempt.key : undefined, key);
+    assert.equal(getAttempt(statePath, key)?.attempts, 1);
+
+    // Still in progress once the repair session has actually started.
+    updateAttempt(statePath, key, { lastSessionId: "session-1" });
+    const third = await claimRepairSlot(statePath, event, policy);
+    assert.equal(third.decision, "in_progress");
+    assert.equal(third.decision === "in_progress" ? third.attempt.key : undefined, key);
+    assert.equal(getAttempt(statePath, key)?.attempts, 1);
+  } finally {
+    rmSync(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("claimRepairSlot rejects with max_attempts BEFORE recording past the cap", async () => {
+  const tempRoot = mkdtempSync(join(tmpdir(), "hootline-state-"));
+  const statePath = join(tempRoot, "state.json");
+  try {
+    const event = makeEvent();
+    const key = eventAttemptKey(event);
+    const policy = makePolicy({ maxAttemptsPerSha: 2 });
+
+    // Each accepted claim marks the slot dispatched; clear it between claims to model a
+    // prior repair that finished or aged out of the active window, which is the only way
+    // the same sha legitimately accrues more than one attempt.
+    assert.equal((await claimRepairSlot(statePath, event, policy)).decision, "accepted");
+    updateAttempt(statePath, key, { dispatchedAt: undefined });
+    assert.equal((await claimRepairSlot(statePath, event, policy)).decision, "accepted");
+    updateAttempt(statePath, key, { dispatchedAt: undefined });
+    assert.equal(getAttempt(statePath, key)?.attempts, 2);
+
+    // The third claim would push the count to 3 (> cap of 2); it must be rejected
+    // WITHOUT recording, so the stored count stays at the cap.
+    const rejected = await claimRepairSlot(statePath, event, policy);
+    assert.equal(rejected.decision, "max_attempts");
+    assert.equal(getAttempt(statePath, key)?.attempts, 2);
+  } finally {
+    rmSync(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("claimRepairSlot dedupes a second pipeline on the same sha once the first is dispatched", async () => {
+  const tempRoot = mkdtempSync(join(tmpdir(), "hootline-state-"));
+  const statePath = join(tempRoot, "state.json");
+  try {
+    const policy = makePolicy();
+    // GitHub fires workflow_run and check_suite for the same commit: same sha, but
+    // different pipeline ids (hence different attempt keys). Only one repair should run.
+    const workflowRun = makeEvent({ pipelineId: "1001", runId: "1001", deliveryId: "delivery-wr" });
+    const checkSuite = makeEvent({
+      pipelineId: "2002",
+      runId: undefined,
+      checkSuiteId: "2002",
+      deliveryId: "delivery-cs",
+    });
+
+    const first = await claimRepairSlot(statePath, workflowRun, policy);
+    assert.equal(first.decision, "accepted");
+
+    const second = await claimRepairSlot(statePath, checkSuite, policy);
+    assert.equal(second.decision, "in_progress");
+  } finally {
+    rmSync(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("claimAutoMerge wins once and restoreAutoMergeClaim re-arms it", async () => {
+  const tempRoot = mkdtempSync(join(tmpdir(), "hootline-state-"));
+  const statePath = join(tempRoot, "state.json");
+  try {
+    const event = makeEvent();
+    const key = eventAttemptKey(event);
+    recordAttempt(statePath, event);
+    updateAttempt(statePath, key, { pendingAutoMerge: true });
+
+    assert.equal(await claimAutoMerge(statePath, key), true);
+    assert.equal(getAttempt(statePath, key)?.pendingAutoMerge, false);
+    // A second concurrent claim loses because the flag is already consumed.
+    assert.equal(await claimAutoMerge(statePath, key), false);
+
+    await restoreAutoMergeClaim(statePath, key);
+    assert.equal(getAttempt(statePath, key)?.pendingAutoMerge, true);
+    assert.equal(await claimAutoMerge(statePath, key), true);
+  } finally {
+    rmSync(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("releaseDelivery lets a redelivery be processed again", async () => {
+  const tempRoot = mkdtempSync(join(tmpdir(), "hootline-state-"));
+  const statePath = join(tempRoot, "state.json");
+  try {
+    assert.equal(markDeliveryProcessed(statePath, "github:delivery-1", "pending"), true);
+    assert.equal(markDeliveryProcessed(statePath, "github:delivery-1", "pending"), false);
+
+    await releaseDelivery(statePath, "github:delivery-1");
+    assert.equal(markDeliveryProcessed(statePath, "github:delivery-1", "pending"), true);
+  } finally {
+    rmSync(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("claimRerunRequest ids are unique and not derived from request count", async () => {
+  const tempRoot = mkdtempSync(join(tmpdir(), "hootline-state-"));
+  const statePath = join(tempRoot, "state.json");
+  try {
+    const event = makeEvent();
+    const key = eventAttemptKey(event);
+    recordAttempt(statePath, event);
+
+    const claim = claimRerunRequest(statePath, key, "runner lost network");
+    assert.ok(claim.claimed);
+    // Id no longer encodes requests.length + 1 (which was collision-prone).
+    assert.notEqual(claim.request.id, `${key}:rerun:1`);
+    assert.match(claim.request.id, new RegExp(`^${key}:rerun:`));
+  } finally {
+    rmSync(tempRoot, { recursive: true, force: true });
+  }
+});
+
+function makePolicy(overrides: Partial<RepoPolicy> = {}): RepoPolicy {
+  const policy: RepoPolicy = {
+    provider: "github",
+    slug: "owner/repo",
+    mode: "pr_mr",
+    allowedBranches: ["main"],
+    allowedFileGlobs: ["**/*"],
+    verificationCommands: [],
+    sandboxNetworkAllow: [],
+    fixBranchPrefix: "hootline/fix",
+    maxAttemptsPerSha: 3,
+    maxSnapshotBytes: 1024,
+    autoMerge: { deleteSourceBranch: false, requireSuccessfulPipeline: true },
+    allowGitlabSecretTokenFallback: false,
+  };
+  return { ...policy, ...overrides };
+}
 
 function makeEvent(overrides: Partial<NormalizedPipelineEvent> = {}): NormalizedPipelineEvent {
   const event: NormalizedPipelineEvent = {

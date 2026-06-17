@@ -1,9 +1,18 @@
 import type { UnknownRecord } from "./unknown.ts";
 
+const ATTEMPT_KEY_MAX = 512;
+const SUMMARY_MAX = 4000;
+const COMMENT_BODY_MAX = 4000;
+const REASON_MAX = 1000;
+
+const attemptKeyProp = {
+  attemptKey: { type: "string", minLength: 1, maxLength: ATTEMPT_KEY_MAX },
+} as const;
+
 export const optionalAttemptKeySchema = {
   type: "object",
   properties: {
-    attemptKey: { type: "string", minLength: 1, maxLength: 512 },
+    ...attemptKeyProp,
   },
   additionalProperties: false,
 } as const;
@@ -11,8 +20,8 @@ export const optionalAttemptKeySchema = {
 export const summarySchema = {
   type: "object",
   properties: {
-    attemptKey: { type: "string", minLength: 1, maxLength: 512 },
-    summary: { type: "string", minLength: 1, maxLength: 4000 },
+    ...attemptKeyProp,
+    summary: { type: "string", minLength: 1, maxLength: SUMMARY_MAX },
   },
   required: ["summary"],
   additionalProperties: false,
@@ -21,8 +30,8 @@ export const summarySchema = {
 export const commentSchema = {
   type: "object",
   properties: {
-    attemptKey: { type: "string", minLength: 1, maxLength: 512 },
-    body: { type: "string", minLength: 1, maxLength: 4000 },
+    ...attemptKeyProp,
+    body: { type: "string", minLength: 1, maxLength: COMMENT_BODY_MAX },
   },
   required: ["body"],
   additionalProperties: false,
@@ -31,8 +40,8 @@ export const commentSchema = {
 export const rerunSchema = {
   type: "object",
   properties: {
-    attemptKey: { type: "string", minLength: 1, maxLength: 512 },
-    reason: { type: "string", minLength: 1, maxLength: 1000 },
+    ...attemptKeyProp,
+    reason: { type: "string", minLength: 1, maxLength: REASON_MAX },
   },
   required: ["reason"],
   additionalProperties: false,
@@ -41,7 +50,7 @@ export const rerunSchema = {
 export const mergeSchema = {
   type: "object",
   properties: {
-    attemptKey: { type: "string", minLength: 1, maxLength: 512 },
+    ...attemptKeyProp,
     confirmedSuccessfulPipeline: { type: "boolean", default: false },
   },
   additionalProperties: false,

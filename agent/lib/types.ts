@@ -82,6 +82,13 @@ export interface PublishInput {
   summary: string;
 }
 
+export interface MergeChangeInput {
+  event: NormalizedPipelineEvent;
+  changeNumber: number;
+  branch: string;
+  deleteSourceBranch: boolean;
+}
+
 export interface PublishResult {
   provider: Provider;
   mode: PublishMode;
@@ -113,6 +120,7 @@ export interface AttemptRecord {
   attempts: number;
   firstSeenAt: string;
   lastSeenAt: string;
+  dispatchedAt?: string | undefined;
   lastSessionId?: string | undefined;
   repoStagedAt?: string | undefined;
   repoStagedFiles?: number | undefined;

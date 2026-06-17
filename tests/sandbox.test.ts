@@ -6,6 +6,7 @@ import {
   collectSandboxChanges,
   runVerificationCommands,
   runVerificationCommandsWithPolicy,
+  validateChangesAgainstPolicy,
   writeSnapshotMarker,
 } from "../agent/lib/sandbox.ts";
 import type { AttemptRecord, RepoPolicy } from "../agent/lib/types.ts";
@@ -42,6 +43,56 @@ test("rejects changed paths that escape repository policy boundaries", async () 
   await assert.rejects(
     collectSandboxChanges(sandbox, makePolicy({ allowedFileGlobs: ["**"] })),
     /escapes repository policy boundaries/,
+  );
+});
+
+test("rejects a changed path under .git as escaping repository policy boundaries", async () => {
+  const sandbox = new FakeSandbox();
+  sandbox.statusStdout = "?? .git/config\0";
+
+  await assert.rejects(
+    collectSandboxChanges(sandbox, makePolicy({ allowedFileGlobs: ["**"] })),
+    /escapes repository policy boundaries: "\.git\/config"/,
+  );
+});
+
+test("rejects an absolute changed path as invalid sandbox git status", async () => {
+  const sandbox = new FakeSandbox();
+  sandbox.statusStdout = "?? /etc/passwd\0";
+
+  await assert.rejects(
+    collectSandboxChanges(sandbox, makePolicy({ allowedFileGlobs: ["**"] })),
+    /Invalid changed path from sandbox git status: "\/etc\/passwd"/,
+  );
+});
+
+test("rejects a changed path containing a backslash as not portable", async () => {
+  const sandbox = new FakeSandbox();
+  sandbox.statusStdout = "?? src\\file.ts\0";
+
+  await assert.rejects(
+    collectSandboxChanges(sandbox, makePolicy({ allowedFileGlobs: ["**"] })),
+    /contains a backslash and is not portable/,
+  );
+});
+
+test("rejects a changed path containing a NUL byte as invalid sandbox git status", async () => {
+  // The -z porcelain split strips NUL delimiters, so the NUL vector is asserted at the
+  // shared path-validation entry point that the publish gate funnels every change through.
+  assert.throws(
+    () => validateChangesAgainstPolicy([{ status: "added", path: "src/a\0b.ts" }], makePolicy()),
+    /Invalid changed path from sandbox git status/,
+  );
+});
+
+test("rejects a changed path outside allowedFileGlobs as not allowed by policy", async () => {
+  const sandbox = new FakeSandbox();
+  sandbox.statusStdout = "?? other/file.ts\0";
+  sandbox.binaryFiles.set("repo/other/file.ts", Buffer.from("x"));
+
+  await assert.rejects(
+    collectSandboxChanges(sandbox, makePolicy()),
+    /Changed path is not allowed by policy: other\/file\.ts/,
   );
 });
 

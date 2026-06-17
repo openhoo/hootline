@@ -40,6 +40,18 @@ type SandboxMarkerWriter = Pick<SandboxSession, "id" | "run" | "writeTextFile">;
 type SandboxMarkerReader = Pick<SandboxSession, "id" | "run" | "readTextFile">;
 type SandboxNetworkPolicySession = Pick<SandboxSession, "setNetworkPolicy">;
 
+export function validateChangesAgainstPolicy(
+  changes: readonly SandboxChange[],
+  policy: RepoPolicy,
+): void {
+  for (const change of changes) {
+    const path = normalizeRepoPath(change.path);
+    if (!matchesAnyPattern(path, policy.allowedFileGlobs)) {
+      throw new Error(`Changed path is not allowed by policy: ${path}`);
+    }
+  }
+}
+
 export async function collectSandboxChanges(
   sandbox: SandboxChangeSession,
   policy: RepoPolicy,

@@ -1,4 +1,5 @@
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { randomUUID } from "node:crypto";
 import { dirname, resolve } from "node:path";
 
 import { z } from "zod";
@@ -8,16 +9,23 @@ import type {
   NormalizedPipelineEvent,
   PipelineFixerState,
   Provider,
+  RepoPolicy,
   RerunRequestRecord,
 } from "./types.ts";
 import { isRecord } from "./unknown.ts";
 
 export type { RerunRequestRecord } from "./types.ts";
 
-const EMPTY_STATE: PipelineFixerState = {
-  processedDeliveries: {},
-  attempts: {},
-};
+// Returns a brand-new empty state. Must build fresh inner objects on every call:
+// loadState/normalizeState hand this value to mutating helpers (recordAttempt,
+// markDeliveryProcessed, ...), so a shared constant would alias processedDeliveries /
+// attempts across unrelated state paths and leak entries between them.
+function emptyState(): PipelineFixerState {
+  return {
+    processedDeliveries: {},
+    attempts: {},
+  };
+}
 
 const MAX_RERUN_REQUESTS_PER_ATTEMPT = 1;
 
@@ -25,9 +33,23 @@ export type RerunRequestClaim =
   | { claimed: true; request: RerunRequestRecord }
   | { claimed: false; request: RerunRequestRecord | undefined };
 
+export type RepairSlotClaim =
+  | { decision: "accepted"; attempt: AttemptRecord }
+  | { decision: "in_progress"; attempt: AttemptRecord }
+  | { decision: "max_attempts" };
+
+// NOTE: These claim guards (claimRepairSlot, claimRerunRequest, claimAutoMerge,
+// markDeliveryProcessed, releaseDelivery) serialize via an in-process promise-chain
+// mutex and therefore assume a SINGLE Node instance. They prevent interleaving
+// between concurrent requests in the same process, but provide no cross-process
+// protection: two separate processes sharing the same state file could still race.
+// A true cross-process guard would require an O_EXCL lockfile (or equivalent),
+// which is explicitly out of scope here.
+
 export type AttemptPatch = Partial<
   Pick<
     AttemptRecord,
+    | "dispatchedAt"
     | "lastSessionId"
     | "repoStagedAt"
     | "repoStagedFiles"
@@ -126,6 +148,7 @@ const attemptRecordSchema = z
     attempts: z.number().int().nonnegative(),
     firstSeenAt: z.string(),
     lastSeenAt: z.string(),
+    dispatchedAt: z.string().optional(),
     lastSessionId: z.string().optional(),
     repoStagedAt: z.string().optional(),
     repoStagedFiles: z.number().int().nonnegative().optional(),
@@ -153,7 +176,7 @@ export function loadState(path: string): PipelineFixerState {
   try {
     return normalizeState(JSON.parse(readFileSync(statePath, "utf8")));
   } catch (error) {
-    if (isNodeError(error) && error.code === "ENOENT") return { ...EMPTY_STATE };
+    if (isNodeError(error) && error.code === "ENOENT") return emptyState();
     throw error;
   }
 }
@@ -161,9 +184,27 @@ export function loadState(path: string): PipelineFixerState {
 export function saveState(path: string, state: PipelineFixerState): void {
   const statePath = resolve(path);
   mkdirSync(dirname(statePath), { recursive: true });
-  const tempPath = `${statePath}.${process.pid}.tmp`;
+  // Unique per write so two interleaved writes never share a temp file (PID alone
+  // is not unique within a single process). Write-temp-then-rename keeps atomicity.
+  const tempPath = `${statePath}.${process.pid}.${randomUUID()}.tmp`;
   writeFileSync(tempPath, `${JSON.stringify(state, null, 2)}\n`);
   renameSync(tempPath, statePath);
+}
+
+// In-process serialization wrapper: a promise-chain mutex. Each call chains onto
+// the previous, so critical sections that span an async boundary (or simply must
+// not interleave) run one at a time within this Node process. See the cross-process
+// caveat documented near the top of this module.
+let mutexChain: Promise<unknown> = Promise.resolve();
+
+function withStateLock<T>(critical: () => T | Promise<T>): Promise<T> {
+  const result = mutexChain.then(() => critical());
+  // Keep the chain alive even if a critical section rejects, so later callers run.
+  mutexChain = result.then(
+    () => undefined,
+    () => undefined,
+  );
+  return result;
 }
 
 export function eventAttemptKey(event: NormalizedPipelineEvent): string {
@@ -180,6 +221,17 @@ export function markDeliveryProcessed(
   state.processedDeliveries[deliveryKey] = sessionId;
   saveState(path, state);
   return true;
+}
+
+// Removes a previously marked delivery so a provider redelivery can retry it
+// instead of being dropped as a duplicate. Serialized like the other claim guards.
+export function releaseDelivery(path: string, deliveryKey: string): Promise<void> {
+  return withStateLock(() => {
+    const state = loadState(path);
+    if (state.processedDeliveries[deliveryKey] === undefined) return;
+    delete state.processedDeliveries[deliveryKey];
+    saveState(path, state);
+  });
 }
 
 export function recordAttempt(path: string, event: NormalizedPipelineEvent): AttemptRecord {
@@ -204,6 +256,65 @@ export function recordAttempt(path: string, event: NormalizedPipelineEvent): Att
   state.attempts[key] = next;
   saveState(path, state);
   return next;
+}
+
+// Atomically claims a repair slot for an event as one critical section so the
+// in-progress check and the per-sha cap can never race with a concurrent claim:
+//   - if an active repair already exists -> { decision: "in_progress", attempt }
+//   - else if recording one more attempt would exceed policy.maxAttemptsPerSha ->
+//     { decision: "max_attempts" } WITHOUT recording (cap is evaluated BEFORE record)
+//   - else record the attempt -> { decision: "accepted", attempt }
+export function claimRepairSlot(
+  path: string,
+  event: NormalizedPipelineEvent,
+  policy: RepoPolicy,
+): Promise<RepairSlotClaim> {
+  return withStateLock(() => {
+    const active = findActiveRepairAttemptForSha(path, {
+      provider: event.provider,
+      repoSlug: event.repoSlug,
+      sha: event.sha,
+    });
+    if (active !== undefined) return { decision: "in_progress", attempt: active };
+
+    const existingCount = countAttemptsForSha(path, {
+      provider: event.provider,
+      repoSlug: event.repoSlug,
+      sha: event.sha,
+    });
+    // Mirror the legacy boundary: recording one more must not exceed the cap.
+    if (existingCount + 1 > policy.maxAttemptsPerSha) return { decision: "max_attempts" };
+
+    const attempt = recordAttempt(path, event);
+    // Mark the slot dispatched in the same critical section so a concurrent event for
+    // the same sha (e.g. GitHub's paired workflow_run + check_suite, which carry the
+    // same sha under different pipeline ids) immediately sees the repair as in
+    // progress and does not double-start it. The marker is cleared if the launch
+    // fails (see startRepairSession) and ages out with the recent window.
+    const dispatchedAt = new Date().toISOString();
+    updateAttempt(path, attempt.key, { dispatchedAt });
+    return { decision: "accepted", attempt: { ...attempt, dispatchedAt } };
+  });
+}
+
+// Atomically flips pendingAutoMerge from true to false for a single attempt and
+// reports whether this caller won the claim. Use restoreAutoMergeClaim to put the
+// flag back if the downstream merge fails and should be retried by a later event.
+export function claimAutoMerge(path: string, key: string): Promise<boolean> {
+  return withStateLock(() => {
+    const state = loadState(path);
+    const existing = state.attempts[key];
+    if (existing === undefined || existing.pendingAutoMerge !== true) return false;
+    state.attempts[key] = { ...existing, pendingAutoMerge: false };
+    saveState(path, state);
+    return true;
+  });
+}
+
+export function restoreAutoMergeClaim(path: string, key: string): Promise<void> {
+  return withStateLock(() => {
+    updateAttempt(path, key, { pendingAutoMerge: true });
+  });
 }
 
 export function getAttempt(path: string, key: string): AttemptRecord | undefined {
@@ -264,7 +375,8 @@ export function claimRerunRequest(path: string, key: string, reason: string): Re
 
   const requestedAt = new Date().toISOString();
   const request: RerunRequestRecord = {
-    id: `${key}:rerun:${requests.length + 1}`,
+    // Unique id source so two interleaved claims can never collide on requests.length.
+    id: `${key}:rerun:${randomUUID()}`,
     requestedAt,
     reason,
   };
@@ -340,15 +452,17 @@ function isActiveRepairAttempt(attempt: AttemptRecord, nowMs: number, recentWind
   const lastSeenMs = Date.parse(attempt.lastSeenAt);
   const isRecent = Number.isFinite(lastSeenMs) && nowMs - lastSeenMs <= recentWindowMs;
   if (!isRecent) return false;
-  if (
+  // A recent attempt is "in progress" once it has been dispatched (claimRepairSlot
+  // marks dispatchedAt inside its critical section) or once a session actually started
+  // doing work. A bare recordAttempt with none of these markers is NOT active, so a
+  // slot that failed to launch (dispatchedAt cleared) can be reclaimed by a redelivery.
+  return (
+    attempt.dispatchedAt !== undefined ||
     attempt.lastSessionId !== undefined ||
     attempt.repoStagedAt !== undefined ||
     attempt.lastFailureContext !== undefined ||
     attempt.lastVerification !== undefined
-  ) {
-    return true;
-  }
-  return true;
+  );
 }
 
 function updateRerunRequest(
@@ -389,7 +503,7 @@ function isRerunRequestRecord(value: unknown): value is RerunRequestRecord {
 
 function normalizeState(value: unknown): PipelineFixerState {
   const parsed = stateShapeSchema.safeParse(value);
-  if (!parsed.success) return { ...EMPTY_STATE };
+  if (!parsed.success) return emptyState();
   return {
     processedDeliveries: readStringRecord(parsed.data.processedDeliveries),
     attempts: readAttemptRecordMap(parsed.data.attempts),

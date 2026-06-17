@@ -1,9 +1,12 @@
 import { createSign } from "node:crypto";
 
 import { redact } from "../redact.ts";
+import { validateChangesAgainstPolicy } from "../sandbox.ts";
+import { isFailureStatus } from "../webhooks.ts";
 import type {
   FailedJobLog,
   FailureContext,
+  MergeChangeInput,
   NormalizedPipelineEvent,
   PublishInput,
   PublishResult,
@@ -13,7 +16,12 @@ import {
   assertResponseOk,
   buildFixBranchName,
   isRecord,
+  MAX_LOG_BYTES,
   parseJsonResponse,
+  PROVIDER_DOWNLOAD_TIMEOUT_MS,
+  PROVIDER_REQUEST_TIMEOUT_MS,
+  readBodyWithCap,
+  readCappedText,
   readNumber,
   readString,
   requireRecord,
@@ -52,22 +60,32 @@ export class GitHubProvider implements ProviderClient {
     return { event, jobs, summary };
   }
 
-  async downloadArchive(event: NormalizedPipelineEvent): Promise<Buffer> {
+  async downloadArchive(event: NormalizedPipelineEvent, maxSnapshotBytes: number): Promise<Buffer> {
     const response = await this.requestRaw(
       event,
       "GET",
       `/repos/${event.repoSlug}/tarball/${event.sha}`,
       undefined,
       { accept: "application/vnd.github+json" },
+      PROVIDER_DOWNLOAD_TIMEOUT_MS,
     );
     if (!response.ok) {
       const body = await response.text();
       throw new Error(`GitHub archive download failed with HTTP ${response.status}: ${redact(body, 4000)}`);
     }
-    return Buffer.from(await response.arrayBuffer());
+    const contentLength = Number(response.headers.get("content-length"));
+    if (Number.isFinite(contentLength) && contentLength > maxSnapshotBytes) {
+      throw new Error(
+        redact(
+          `GitHub archive is ${contentLength} bytes, above policy limit ${maxSnapshotBytes}.`,
+        ),
+      );
+    }
+    return readBodyWithCap(response, maxSnapshotBytes);
   }
 
   async publishFix(input: PublishInput): Promise<PublishResult> {
+    validateChangesAgainstPolicy(input.changes, input.policy);
     const branch = buildFixBranchName(input.policy.fixBranchPrefix, input.event);
     const baseSha = await this.resolveBaseSha(input.event);
     await this.ensureBranch(input.event, branch, baseSha);
@@ -117,12 +135,7 @@ export class GitHubProvider implements ProviderClient {
     return { message: `Requested rerun of failed jobs for workflow run ${event.runId}.` };
   }
 
-  async mergeChange(input: {
-    event: NormalizedPipelineEvent;
-    changeNumber: number;
-    branch: string;
-    deleteSourceBranch: boolean;
-  }): Promise<PublishResult> {
+  async mergeChange(input: MergeChangeInput): Promise<PublishResult> {
     const merged = await this.requestRecord(
       input.event,
       "PUT",
@@ -157,7 +170,7 @@ export class GitHubProvider implements ProviderClient {
       `/repos/${event.repoSlug}/actions/runs/${event.runId}/jobs?filter=latest&per_page=100`,
     );
     const jobs = Array.isArray(jobsResponse.jobs) ? jobsResponse.jobs.filter(isRecord) : [];
-    const failedJobs = jobs.filter((job) => isFailure(readString(job.conclusion) ?? readString(job.status) ?? ""));
+    const failedJobs = jobs.filter((job) => isFailureStatus(readString(job.conclusion) ?? readString(job.status) ?? ""));
     const logs: FailedJobLog[] = [];
     for (const job of failedJobs.slice(0, 8)) {
       const id = readNumber(job.id)?.toString();
@@ -187,7 +200,7 @@ export class GitHubProvider implements ProviderClient {
       ? runsResponse.check_runs.filter(isRecord)
       : [];
     return checkRuns
-      .filter((run) => isFailure(readString(run.conclusion) ?? readString(run.status) ?? ""))
+      .filter((run) => isFailureStatus(readString(run.conclusion) ?? readString(run.status) ?? ""))
       .slice(0, 8)
       .map((run) => {
         const output = isRecord(run.output) ? run.output : undefined;
@@ -213,9 +226,12 @@ export class GitHubProvider implements ProviderClient {
       event,
       "GET",
       `/repos/${event.repoSlug}/actions/jobs/${jobId}/logs`,
+      undefined,
+      {},
+      PROVIDER_DOWNLOAD_TIMEOUT_MS,
     );
     if (!response.ok) return `GitHub log fetch failed with HTTP ${response.status}.`;
-    return response.text();
+    return readCappedText(response, MAX_LOG_BYTES);
   }
 
   private async resolveBaseSha(event: NormalizedPipelineEvent): Promise<string> {
@@ -378,6 +394,7 @@ export class GitHubProvider implements ProviderClient {
     path: string,
     body?: unknown,
     headers: Record<string, string> = {},
+    timeoutMs: number = PROVIDER_REQUEST_TIMEOUT_MS,
   ): Promise<Response> {
     const token = await getInstallationToken(event);
     const init: RequestInit = {
@@ -389,10 +406,26 @@ export class GitHubProvider implements ProviderClient {
         "x-github-api-version": "2022-11-28",
         ...headers,
       },
+      signal: AbortSignal.timeout(timeoutMs),
     };
     if (body !== undefined) init.body = JSON.stringify(body);
-    return fetch(`https://api.github.com${path}`, init);
+    return fetchWithTimeout(`https://api.github.com${path}`, init, timeoutMs);
   }
+}
+
+async function fetchWithTimeout(url: string, init: RequestInit, timeoutMs: number): Promise<Response> {
+  try {
+    return await fetch(url, init);
+  } catch (error) {
+    if (isTimeoutError(error)) {
+      throw new Error(redact(`GitHub request timed out after ${timeoutMs}ms`));
+    }
+    throw error;
+  }
+}
+
+function isTimeoutError(error: unknown): boolean {
+  return error instanceof Error && (error.name === "TimeoutError" || error.name === "AbortError");
 }
 
 async function getInstallationToken(event: NormalizedPipelineEvent): Promise<string> {
@@ -406,7 +439,7 @@ async function getInstallationToken(event: NormalizedPipelineEvent): Promise<str
   const cached = tokenCache.get(cacheKey);
   if (cached !== undefined && Date.now() < cached.expiresAt - 60_000) return cached.token;
   const jwt = createGitHubJwt(appId, privateKey);
-  const response = await fetch(
+  const response = await fetchWithTimeout(
     `https://api.github.com/app/installations/${event.installationId}/access_tokens`,
     {
       method: "POST",
@@ -415,7 +448,9 @@ async function getInstallationToken(event: NormalizedPipelineEvent): Promise<str
         authorization: `Bearer ${jwt}`,
         "x-github-api-version": "2022-11-28",
       },
+      signal: AbortSignal.timeout(PROVIDER_REQUEST_TIMEOUT_MS),
     },
+    PROVIDER_REQUEST_TIMEOUT_MS,
   );
   const body = await parseJsonResponse(response);
   assertResponseOk(response, body, "GitHub installation token");
@@ -452,10 +487,4 @@ function buildChangeBody(event: NormalizedPipelineEvent, summary: string): strin
     "",
     summary,
   ].join("\n");
-}
-
-function isFailure(value: string): boolean {
-  return ["failure", "failed", "timed_out", "cancelled", "canceled", "action_required"].includes(
-    value.toLowerCase(),
-  );
 }
