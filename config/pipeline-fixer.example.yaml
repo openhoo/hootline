@@ -1,0 +1,75 @@
+version: 1
+
+# Durable app-runtime state. This stores delivery dedupe records, attempt
+# metadata, staged/published status, and pending auto-merge records. Keep it
+# outside the sandbox; it is read by trusted runtime code, not by the model.
+statePath: var/pipeline-fixer-state.json
+
+defaults:
+  # Loop control is owned by Eve plus the policy fields below. There is no AI SDK
+  # ToolLoopAgent or ai-sdk-tools block here; unknown keys are ignored by the
+  # current loader and should not be used for runtime behavior.
+  # pr_mr opens or updates a PR/MR, push_branch pushes the fixer branch only,
+  # and auto_merge records a PR/MR for deterministic merge after a successful
+  # follow-up pipeline webhook.
+  mode: pr_mr
+
+  # The webhook event ref must match one of these patterns before a repair
+  # session starts.
+  allowedBranches:
+    - main
+    - "release/**"
+
+  # publish_fix rejects changed paths outside this allowlist. Keep this narrow
+  # enough that CI repair cannot drift into unrelated project areas.
+  allowedFileGlobs:
+    - ".github/workflows/**"
+    - ".gitlab-ci.yml"
+    - "src/**"
+    - "test/**"
+    - "tests/**"
+    - "package.json"
+    - "package-lock.json"
+
+  # Commands run inside /workspace/repo by run_repo_checks and again by
+  # publish_fix before provider state is changed.
+  verificationCommands:
+    - npm test
+
+  # Verification should assume no sandbox egress unless domains are listed here.
+  # Add only hosts required by the verification commands, such as package
+  # registries or internal artifact mirrors. Secrets are not placed in the
+  # sandbox by this setting.
+  sandboxNetworkAllow: []
+
+  fixBranchPrefix: hootline/fix
+
+  # Bounds repeated repairs for the same provider/repo/SHA/pipeline key.
+  maxAttemptsPerSha: 2
+
+  # Archive size guard for staging provider snapshots into /workspace/repo.
+  maxSnapshotBytes: 52428800
+
+  # Prefer GitLab Standard Webhooks. Enable only for legacy GitLab Secret Token
+  # integrations that cannot send Standard Webhook signatures.
+  allowGitlabSecretTokenFallback: false
+
+  autoMerge:
+    # When true, a later successful pipeline webhook for the fixer branch is the
+    # normal merge trigger. The model should not monitor or poll for success.
+    requireSuccessfulPipeline: true
+    deleteSourceBranch: true
+
+repositories:
+  - provider: github
+    slug: owner/repo
+    # Inherits defaults; override mode, allowedFileGlobs, verificationCommands,
+    # sandboxNetworkAllow, or autoMerge per repository as needed.
+    mode: pr_mr
+
+  - provider: gitlab
+    slug: group/project
+    # Use the numeric GitLab project ID or URL-encoded path when it differs from
+    # slug or the API requires a stable encoded project identifier.
+    gitlabProjectId: group%2Fproject
+    mode: pr_mr

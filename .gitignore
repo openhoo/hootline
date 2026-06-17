@@ -1,0 +1,10 @@
+node_modules/
+.eve/
+.output/
+.workflow-data/
+.env
+.env.*
+!.env.example
+var/
+coverage/
+*.log
