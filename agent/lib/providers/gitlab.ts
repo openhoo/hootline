@@ -1,3 +1,6 @@
+import { request as httpRequest, type IncomingHttpHeaders } from "node:http";
+import { request as httpsRequest } from "node:https";
+
 import { createLogger } from "../logger.ts";
 import { redact } from "../redact.ts";
 import { validateChangesAgainstPolicy } from "../sandbox.ts";
@@ -18,7 +21,6 @@ import {
   parseJsonResponse,
   PROVIDER_DOWNLOAD_TIMEOUT_MS,
   PROVIDER_REQUEST_TIMEOUT_MS,
-  readBodyWithCap,
   readCappedText,
   readNumber,
   readString,
@@ -50,18 +52,30 @@ export class GitLabProvider implements ProviderClient {
   }
 
   async downloadArchive(event: NormalizedPipelineEvent, maxSnapshotBytes: number): Promise<Buffer> {
-    const response = await this.requestRaw(
-      event,
-      "GET",
-      `/projects/${encodeProject(event)}/repository/archive.tar.gz?sha=${encodeURIComponent(event.sha)}`,
-      undefined,
+    const path = `/projects/${encodeProject(event)}/repository/archive.tar.gz?sha=${encodeURIComponent(event.sha)}`;
+    log.debug({ repoSlug: event.repoSlug, method: "GET", path }, "gitlab api request");
+    const token = process.env.GITLAB_TOKEN;
+    if (!token) throw new Error("GITLAB_TOKEN is required.");
+    const baseUrl = process.env.GITLAB_BASE_URL ?? "https://gitlab.com";
+    const response = await requestBinaryWithCap(
+      `${baseUrl.replace(/\/$/, "")}/api/v4${path}`,
+      {
+        accept: "application/octet-stream",
+        "private-token": token,
+        "user-agent": "hootline",
+      },
       PROVIDER_DOWNLOAD_TIMEOUT_MS,
+      maxSnapshotBytes,
     );
-    if (!response.ok) {
-      const body = await response.text();
-      throw new Error(`GitLab archive download failed with HTTP ${response.status}: ${redact(body, 4000)}`);
+    if (response.statusCode < 200 || response.statusCode >= 300) {
+      throw new Error(
+        `GitLab archive download failed with HTTP ${response.statusCode}: ${redact(
+          response.body.toString("utf8"),
+          4000,
+        )}`,
+      );
     }
-    const contentLength = Number(response.headers.get("content-length"));
+    const contentLength = Number(response.headers["content-length"]);
     if (Number.isFinite(contentLength) && contentLength > maxSnapshotBytes) {
       throw new Error(
         redact(
@@ -69,7 +83,7 @@ export class GitLabProvider implements ProviderClient {
         ),
       );
     }
-    return readBodyWithCap(response, maxSnapshotBytes);
+    return response.body;
   }
 
   async publishFix(input: PublishInput): Promise<PublishResult> {
@@ -361,6 +375,58 @@ async function fetchWithTimeout(url: string, init: RequestInit, timeoutMs: numbe
     }
     throw error;
   }
+}
+
+interface BinaryResponse {
+  statusCode: number;
+  headers: IncomingHttpHeaders;
+  body: Buffer;
+}
+
+function requestBinaryWithCap(
+  url: string,
+  headers: Record<string, string>,
+  timeoutMs: number,
+  maxBytes: number,
+  redirectsRemaining = 3,
+): Promise<BinaryResponse> {
+  const parsed = new URL(url);
+  const request = parsed.protocol === "https:" ? httpsRequest : httpRequest;
+  return new Promise((resolve, reject) => {
+    const req = request(parsed, { headers, method: "GET", timeout: timeoutMs }, (res) => {
+      const statusCode = res.statusCode ?? 0;
+      const location = res.headers.location;
+      if (location && isRedirectStatus(statusCode) && redirectsRemaining > 0) {
+        res.resume();
+        const nextUrl = new URL(location, parsed).toString();
+        requestBinaryWithCap(nextUrl, headers, timeoutMs, maxBytes, redirectsRemaining - 1).then(resolve, reject);
+        return;
+      }
+
+      const chunks: Buffer[] = [];
+      let bytes = 0;
+      res.on("data", (chunk: Buffer) => {
+        bytes += chunk.byteLength;
+        if (bytes > maxBytes) {
+          req.destroy(new Error(redact(`GitLab archive exceeded policy limit ${maxBytes} bytes.`)));
+          return;
+        }
+        chunks.push(chunk);
+      });
+      res.on("end", () => {
+        resolve({ statusCode, headers: res.headers, body: Buffer.concat(chunks) });
+      });
+    });
+    req.on("timeout", () => {
+      req.destroy(new Error(redact(`GitLab request timed out after ${timeoutMs}ms`)));
+    });
+    req.on("error", reject);
+    req.end();
+  });
+}
+
+function isRedirectStatus(statusCode: number): boolean {
+  return statusCode === 301 || statusCode === 302 || statusCode === 303 || statusCode === 307 || statusCode === 308;
 }
 
 function isTimeoutError(error: unknown): boolean {
