@@ -17,11 +17,11 @@ const maxContextWindowTokens = 2_000_000;
 const minContextWindowTokens = 4_096;
 
 export function resolvePipelineFixerModel(env: NodeJS.ProcessEnv = process.env) {
-  const provider = readProvider(env.PIPELINE_FIXER_MODEL_PROVIDER);
-  const configuredModel = readNonEmpty(env.PIPELINE_FIXER_MODEL);
+  const provider = readProvider(env.HOOTLINE_MODEL_PROVIDER);
+  const configuredModel = readNonEmpty(env.HOOTLINE_MODEL);
   const model = configuredModel ?? defaultModels[provider];
-  const apiKey = readNonEmpty(env.PIPELINE_FIXER_MODEL_API_KEY);
-  const baseURL = readNonEmpty(env.PIPELINE_FIXER_MODEL_BASE_URL);
+  const apiKey = readNonEmpty(env.HOOTLINE_MODEL_API_KEY);
+  const baseURL = readNonEmpty(env.HOOTLINE_MODEL_BASE_URL);
 
   if (provider === "gateway") {
     requireAnyCredential(env, ["AI_GATEWAY_API_KEY", "VERCEL_OIDC_TOKEN"], provider);
@@ -29,7 +29,7 @@ export function resolvePipelineFixerModel(env: NodeJS.ProcessEnv = process.env) 
   }
 
   if (provider === "anthropic") {
-    requireAnyCredential(env, ["PIPELINE_FIXER_MODEL_API_KEY", "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN"], provider);
+    requireAnyCredential(env, ["HOOTLINE_MODEL_API_KEY", "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN"], provider);
     const anthropic = createAnthropic({
       ...(apiKey !== undefined ? { apiKey } : {}),
       ...(baseURL !== undefined ? { baseURL } : {}),
@@ -38,7 +38,7 @@ export function resolvePipelineFixerModel(env: NodeJS.ProcessEnv = process.env) 
   }
 
   if (provider === "openai") {
-    requireAnyCredential(env, ["PIPELINE_FIXER_MODEL_API_KEY", "OPENAI_API_KEY"], provider);
+    requireAnyCredential(env, ["HOOTLINE_MODEL_API_KEY", "OPENAI_API_KEY"], provider);
     const openai = createOpenAI({
       ...(apiKey !== undefined ? { apiKey } : {}),
       ...(baseURL !== undefined ? { baseURL } : {}),
@@ -48,12 +48,12 @@ export function resolvePipelineFixerModel(env: NodeJS.ProcessEnv = process.env) 
 
   if (baseURL === undefined) {
     throw new Error(
-      "PIPELINE_FIXER_MODEL_BASE_URL is required when PIPELINE_FIXER_MODEL_PROVIDER=openai-compatible.",
+      "HOOTLINE_MODEL_BASE_URL is required when HOOTLINE_MODEL_PROVIDER=openai-compatible.",
     );
   }
 
   const compatible = createOpenAICompatible({
-    name: readNonEmpty(env.PIPELINE_FIXER_MODEL_PROVIDER_NAME) ?? "openai-compatible",
+    name: readNonEmpty(env.HOOTLINE_MODEL_PROVIDER_NAME) ?? "openai-compatible",
     baseURL,
     ...(apiKey !== undefined ? { apiKey } : {}),
   });
@@ -63,12 +63,12 @@ export function resolvePipelineFixerModel(env: NodeJS.ProcessEnv = process.env) 
 export function resolvePipelineFixerModelContextWindowTokens(
   env: NodeJS.ProcessEnv = process.env,
 ): number | undefined {
-  const configured = readPositiveInteger(env.PIPELINE_FIXER_MODEL_CONTEXT_WINDOW_TOKENS);
+  const configured = readPositiveInteger(env.HOOTLINE_MODEL_CONTEXT_WINDOW_TOKENS);
   if (configured !== undefined) return configured;
-  const provider = readProvider(env.PIPELINE_FIXER_MODEL_PROVIDER);
+  const provider = readProvider(env.HOOTLINE_MODEL_PROVIDER);
   if (provider === "openai-compatible") {
     throw new Error(
-      "PIPELINE_FIXER_MODEL_CONTEXT_WINDOW_TOKENS is required when PIPELINE_FIXER_MODEL_PROVIDER=openai-compatible.",
+      "HOOTLINE_MODEL_CONTEXT_WINDOW_TOKENS is required when HOOTLINE_MODEL_PROVIDER=openai-compatible.",
     );
   }
   return undefined;
@@ -78,7 +78,7 @@ function readProvider(value: string | undefined): PipelineFixerModelProvider {
   const provider = readNonEmpty(value) ?? "anthropic";
   if (isSupportedProvider(provider)) return provider;
   throw new Error(
-    `Unsupported PIPELINE_FIXER_MODEL_PROVIDER "${provider}". Expected one of: ${supportedProviders.join(", ")}.`,
+    `Unsupported HOOTLINE_MODEL_PROVIDER "${provider}". Expected one of: ${supportedProviders.join(", ")}.`,
   );
 }
 
@@ -101,7 +101,7 @@ function readPositiveInteger(value: string | undefined): number | undefined {
   const trimmed = readNonEmpty(value);
   if (trimmed === undefined) return undefined;
   if (!/^\d+$/.test(trimmed)) {
-    throw new Error("PIPELINE_FIXER_MODEL_CONTEXT_WINDOW_TOKENS must be a positive integer.");
+    throw new Error("HOOTLINE_MODEL_CONTEXT_WINDOW_TOKENS must be a positive integer.");
   }
   const parsed = Number(trimmed);
   if (
@@ -110,7 +110,7 @@ function readPositiveInteger(value: string | undefined): number | undefined {
     parsed > maxContextWindowTokens
   ) {
     throw new Error(
-      `PIPELINE_FIXER_MODEL_CONTEXT_WINDOW_TOKENS must be between ${minContextWindowTokens} and ${maxContextWindowTokens}.`,
+      `HOOTLINE_MODEL_CONTEXT_WINDOW_TOKENS must be between ${minContextWindowTokens} and ${maxContextWindowTokens}.`,
     );
   }
   return parsed;
@@ -123,6 +123,6 @@ function requireAnyCredential(
 ): void {
   if (names.some((name) => readNonEmpty(env[name]) !== undefined)) return;
   throw new Error(
-    `Missing model credential for PIPELINE_FIXER_MODEL_PROVIDER=${provider}. Set one of: ${names.join(", ")}.`,
+    `Missing model credential for HOOTLINE_MODEL_PROVIDER=${provider}. Set one of: ${names.join(", ")}.`,
   );
 }

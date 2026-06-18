@@ -1,6 +1,6 @@
 import { defineChannel, POST, type SendFn } from "eve/channels";
 
-import { findRepoPolicy, loadConfig } from "../lib/config.ts";
+import { loadServiceConfig, parseRepoPolicyConfig, RepoPolicyConfigError } from "../lib/config.ts";
 import { createLogger, logError, type Logger } from "../lib/logger.ts";
 import { assertEventAllowedByPolicy } from "../lib/policy.ts";
 import { getProviderClient } from "../lib/providers/index.ts";
@@ -54,30 +54,7 @@ export default defineChannel({
       const payload = parseJson(body);
       const event = normalizeGitLabEvent(payload, req.headers);
       if (event === null) return Response.json({ ok: true, ignored: true });
-      const config = loadConfig();
-      const policy = findRepoPolicy(config, event.provider, event.repoSlug);
-      if (policy === undefined) {
-        log.debug(
-          { provider: event.provider, repoSlug: event.repoSlug },
-          "gitlab event ignored: repo not configured",
-        );
-        return Response.json({ ok: true, ignored: true, reason: "repo_not_configured" });
-      }
-      if (verification === "secret_token" && !policy.allowGitlabSecretTokenFallback) {
-        log.warn(
-          { provider: event.provider, repoSlug: event.repoSlug },
-          "gitlab secret-token fallback rejected by policy (allowGitlabSecretTokenFallback=false)",
-        );
-        return Response.json({ ok: false, error: "invalid_signature" }, { status: 401 });
-      }
-      if (verification === "secret_token") {
-        // Expected path when policy opts into the fallback; debug, not warn.
-        log.debug(
-          { provider: event.provider, repoSlug: event.repoSlug },
-          "gitlab webhook accepted via secret-token fallback (weaker than signature)",
-        );
-      }
-      return dispatchPipelineEvent(event, send, waitUntil);
+      return dispatchPipelineEvent(event, send, waitUntil, verification);
     }),
   ],
 });
@@ -86,17 +63,10 @@ async function dispatchPipelineEvent(
   event: NormalizedPipelineEvent | null,
   send: SendFn,
   waitUntil: (task: Promise<unknown>) => void,
+  gitlabVerification?: "standard" | "secret_token",
 ): Promise<Response> {
   if (event === null) return Response.json({ ok: true, ignored: true });
-  const config = loadConfig();
-  const policy = findRepoPolicy(config, event.provider, event.repoSlug);
-  if (policy === undefined) {
-    log.debug(
-      { provider: event.provider, repoSlug: event.repoSlug },
-      "event ignored: repo not configured",
-    );
-    return Response.json({ ok: true, ignored: true, reason: "repo_not_configured" });
-  }
+  const config = loadServiceConfig();
 
   const deliveryKey = `${event.provider}:${event.deliveryId}`;
   // Correlate every line for this delivery; attemptKey is added below once a slot is claimed.
@@ -110,15 +80,14 @@ async function dispatchPipelineEvent(
   });
   dlog.debug({ conclusion: event.conclusion }, "pipeline webhook received");
 
-  if (!markDeliveryProcessed(config.statePath, deliveryKey, "pending")) {
-    dlog.debug("delivery ignored: duplicate delivery already processed");
-    return Response.json({ ok: true, ignored: true, reason: "duplicate_delivery" });
-  }
-
   if (isSuccessfulConclusion(event.conclusion)) {
+    if (!markDeliveryProcessed(config.statePath, deliveryKey, "pending")) {
+      dlog.debug("delivery ignored: duplicate delivery already processed");
+      return Response.json({ ok: true, ignored: true, reason: "duplicate_delivery" });
+    }
     dlog.info("successful pipeline: queuing auto-merge followup");
     waitUntil(
-      handleSuccessfulPipeline(event, policy, dlog).catch((error: unknown) => {
+      handleSuccessfulPipeline(event, dlog).catch((error: unknown) => {
         logError(dlog, "auto-merge followup failed; pendingAutoMerge restored for retry", error);
       }),
     );
@@ -128,6 +97,34 @@ async function dispatchPipelineEvent(
   if (!isFailedConclusion(event.conclusion)) {
     dlog.debug({ conclusion: event.conclusion }, "event ignored: non-failure completion");
     return Response.json({ ok: true, ignored: true, reason: "non_failure_completion" });
+  }
+
+  const policyResolution = await resolveRepoPolicy(event, dlog);
+  if (policyResolution.kind === "missing") {
+    dlog.debug("event ignored: repo not configured");
+    return Response.json({ ok: true, ignored: true, reason: "repo_not_configured" });
+  }
+  if (policyResolution.kind === "invalid") {
+    dlog.info({ error: policyResolution.error.message }, "event ignored: invalid repository config");
+    return Response.json({ ok: true, ignored: true, reason: "invalid_repo_config" }, { status: 202 });
+  }
+  const policy = policyResolution.policy;
+
+  if (
+    event.provider === "gitlab" &&
+    gitlabVerification === "secret_token" &&
+    !policy.allowGitlabSecretTokenFallback
+  ) {
+    dlog.warn("gitlab secret-token fallback rejected by policy (allowGitlabSecretTokenFallback=false)");
+    return Response.json({ ok: false, error: "invalid_signature" }, { status: 401 });
+  }
+  if (event.provider === "gitlab" && gitlabVerification === "secret_token") {
+    dlog.debug("gitlab webhook accepted via secret-token fallback (weaker than signature)");
+  }
+
+  if (!markDeliveryProcessed(config.statePath, deliveryKey, "pending")) {
+    dlog.debug("delivery ignored: duplicate delivery already processed");
+    return Response.json({ ok: true, ignored: true, reason: "duplicate_delivery" });
   }
 
   try {
@@ -162,11 +159,16 @@ async function dispatchPipelineEvent(
   const alog = dlog.child({ attemptKey: attempt.key });
   alog.info({ attempt: attempt.attempts }, "repair slot claimed: dispatching repair session");
   waitUntil(
-    startRepairSession({ event, policy, attemptKey: attempt.key, continuationToken, deliveryKey, send }).catch(
-      (error: unknown) => {
-        logError(alog, "repair session start failed; delivery released for retry", error);
-      },
-    ),
+    startRepairSession({
+      event,
+      policy: attempt.policy,
+      attemptKey: attempt.key,
+      continuationToken,
+      deliveryKey,
+      send,
+    }).catch((error: unknown) => {
+      logError(alog, "repair session start failed; delivery released for retry", error);
+    }),
   );
 
   return Response.json({ ok: true, accepted: true, attempt: attempt.attempts });
@@ -180,7 +182,7 @@ async function startRepairSession(input: {
   deliveryKey: string;
   send: SendFn;
 }): Promise<void> {
-  const config = loadConfig();
+  const config = loadServiceConfig();
   const slog = log.child({
     provider: input.event.provider,
     repoSlug: input.event.repoSlug,
@@ -225,11 +227,9 @@ async function startRepairSession(input: {
 
 async function handleSuccessfulPipeline(
   event: NormalizedPipelineEvent,
-  policy: RepoPolicy,
   parentLog: Logger,
 ): Promise<void> {
-  if (policy.mode !== "auto_merge" || !policy.autoMerge.requireSuccessfulPipeline) return;
-  const config = loadConfig();
+  const config = loadServiceConfig();
   const attempt = findPendingAutoMergeAttempt(config.statePath, {
     provider: event.provider,
     repoSlug: event.repoSlug,
@@ -240,6 +240,8 @@ async function handleSuccessfulPipeline(
     parentLog.debug("no pending auto-merge attempt matches this successful pipeline");
     return;
   }
+  const policy = attempt.policy;
+  if (policy.mode !== "auto_merge" || !policy.autoMerge.requireSuccessfulPipeline) return;
   const changeNumber = attempt.changeNumber;
   const branch = attempt.publishedBranch;
   const mlog = parentLog.child({ attemptKey: attempt.key, changeNumber });
@@ -302,7 +304,7 @@ function buildSeedContext(
   failureContext: FailureContext | { error: string },
 ): string[] {
   return [
-    toContextBlock("Pipeline fixer state", { attemptKey }),
+    toContextBlock("Hootline state", { attemptKey }),
     toContextBlock("Normalized pipeline event", event),
     toContextBlock("Repository policy", {
       mode: policy.mode,
@@ -315,6 +317,34 @@ function buildSeedContext(
     }),
     toContextBlock("Initial failure context collected by trusted runtime code", failureContext),
   ];
+}
+
+type RepoPolicyResolution =
+  | { kind: "found"; policy: RepoPolicy }
+  | { kind: "missing" }
+  | { kind: "invalid"; error: Error };
+
+async function resolveRepoPolicy(
+  event: NormalizedPipelineEvent,
+  parentLog: Logger,
+): Promise<RepoPolicyResolution> {
+  const config = loadServiceConfig();
+  const text = await getProviderClient(event.provider).readRepositoryFileFromDefaultBranch(
+    event,
+    config.repoConfigPath,
+  );
+  if (text === null) return { kind: "missing" };
+  try {
+    return {
+      kind: "found",
+      policy: parseRepoPolicyConfig(text, { provider: event.provider, slug: event.repoSlug }),
+    };
+  } catch (error) {
+    const normalized =
+      error instanceof Error ? error : new RepoPolicyConfigError(String(error));
+    parentLog.debug({ error: normalized.message }, "repository config validation failed");
+    return { kind: "invalid", error: normalized };
+  }
 }
 
 function toContextBlock(title: string, value: unknown): string {

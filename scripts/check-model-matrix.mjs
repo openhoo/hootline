@@ -8,9 +8,9 @@ const cases = [
     expectedRouting: { kind: "external", provider: "anthropic" },
     env: {
       ANTHROPIC_API_KEY: "test-anthropic-key",
-      PIPELINE_FIXER_MODEL: "claude-sonnet-4-6",
-      PIPELINE_FIXER_MODEL_CONTEXT_WINDOW_TOKENS: "1000000",
-      PIPELINE_FIXER_MODEL_PROVIDER: "anthropic",
+      HOOTLINE_MODEL: "claude-sonnet-4-6",
+      HOOTLINE_MODEL_CONTEXT_WINDOW_TOKENS: "1000000",
+      HOOTLINE_MODEL_PROVIDER: "anthropic",
     },
   },
   {
@@ -18,19 +18,19 @@ const cases = [
     expectedRouting: { kind: "external", provider: "openai" },
     env: {
       OPENAI_API_KEY: "test-openai-key",
-      PIPELINE_FIXER_MODEL: "gpt-5.1",
-      PIPELINE_FIXER_MODEL_CONTEXT_WINDOW_TOKENS: "400000",
-      PIPELINE_FIXER_MODEL_PROVIDER: "openai",
+      HOOTLINE_MODEL: "gpt-5.1",
+      HOOTLINE_MODEL_CONTEXT_WINDOW_TOKENS: "400000",
+      HOOTLINE_MODEL_PROVIDER: "openai",
     },
   },
   {
     name: "OpenAI-compatible",
     expectedRouting: { kind: "external", provider: "openai-compatible" },
     env: {
-      PIPELINE_FIXER_MODEL: "local-coder",
-      PIPELINE_FIXER_MODEL_BASE_URL: "http://127.0.0.1:11434/v1",
-      PIPELINE_FIXER_MODEL_CONTEXT_WINDOW_TOKENS: "131072",
-      PIPELINE_FIXER_MODEL_PROVIDER: "openai-compatible",
+      HOOTLINE_MODEL: "local-coder",
+      HOOTLINE_MODEL_BASE_URL: "http://127.0.0.1:11434/v1",
+      HOOTLINE_MODEL_CONTEXT_WINDOW_TOKENS: "131072",
+      HOOTLINE_MODEL_PROVIDER: "openai-compatible",
     },
   },
   {
@@ -38,9 +38,9 @@ const cases = [
     expectedRouting: { kind: "gateway", target: "anthropic" },
     env: {
       AI_GATEWAY_API_KEY: "test-gateway-key",
-      PIPELINE_FIXER_MODEL: "anthropic/claude-sonnet-4.6",
-      PIPELINE_FIXER_MODEL_CONTEXT_WINDOW_TOKENS: "1000000",
-      PIPELINE_FIXER_MODEL_PROVIDER: "gateway",
+      HOOTLINE_MODEL: "anthropic/claude-sonnet-4.6",
+      HOOTLINE_MODEL_CONTEXT_WINDOW_TOKENS: "1000000",
+      HOOTLINE_MODEL_PROVIDER: "gateway",
     },
   },
 ];
@@ -53,7 +53,7 @@ for (const testCase of cases) {
   const manifest = JSON.parse(readFileSync(".eve/compile/compiled-agent-manifest.json", "utf8"));
   const model = manifest.config.model;
   assertObjectIncludes(model.routing, testCase.expectedRouting, `${testCase.name} routing`);
-  if (Number(model.contextWindowTokens) !== Number(testCase.env.PIPELINE_FIXER_MODEL_CONTEXT_WINDOW_TOKENS)) {
+  if (Number(model.contextWindowTokens) !== Number(testCase.env.HOOTLINE_MODEL_CONTEXT_WINDOW_TOKENS)) {
     throw new Error(`${testCase.name} did not preserve modelContextWindowTokens.`);
   }
   if (manifest.config.compaction?.model !== undefined) {
@@ -71,9 +71,9 @@ execFileSync("npm", ["run", "info"], {
   env: {
     ...process.env,
     ANTHROPIC_API_KEY: "test-anthropic-key",
-    PIPELINE_FIXER_MODEL: "claude-sonnet-4-6",
-    PIPELINE_FIXER_MODEL_CONTEXT_WINDOW_TOKENS: "1000000",
-    PIPELINE_FIXER_MODEL_PROVIDER: "anthropic",
+    HOOTLINE_MODEL: "claude-sonnet-4-6",
+    HOOTLINE_MODEL_CONTEXT_WINDOW_TOKENS: "1000000",
+    HOOTLINE_MODEL_PROVIDER: "anthropic",
   },
   stdio: "ignore",
 });

@@ -35,8 +35,8 @@ test("records attempts, dedupes deliveries, and finds pending auto-merge changes
     assert.equal(markDeliveryProcessed(statePath, "github:delivery-1", "pending"), true);
     assert.equal(markDeliveryProcessed(statePath, "github:delivery-1", "pending"), false);
 
-    const first = recordAttempt(statePath, event);
-    const second = recordAttempt(statePath, { ...event, deliveryId: "delivery-2" });
+    const first = recordAttempt(statePath, event, makePolicy());
+    const second = recordAttempt(statePath, { ...event, deliveryId: "delivery-2" }, makePolicy());
     assert.equal(first.key, key);
     assert.equal(second.attempts, 2);
     assert.equal(getAttempt(statePath, key)?.event.deliveryId, "delivery-2");
@@ -79,9 +79,9 @@ test("counts attempts for a sha across pipeline ids", () => {
       runId: "1002",
     });
 
-    recordAttempt(statePath, firstPipeline);
-    recordAttempt(statePath, { ...firstPipeline, deliveryId: "delivery-3" });
-    recordAttempt(statePath, secondPipeline);
+    recordAttempt(statePath, firstPipeline, makePolicy());
+    recordAttempt(statePath, { ...firstPipeline, deliveryId: "delivery-3" }, makePolicy());
+    recordAttempt(statePath, secondPipeline, makePolicy());
 
     assert.equal(
       countAttemptsForSha(statePath, {
@@ -112,7 +112,7 @@ test("finds active repair attempts for duplicate pipeline events without pinning
     const key = eventAttemptKey(event);
     const now = new Date();
     const afterRecentWindow = new Date(now.getTime() + 1000);
-    recordAttempt(statePath, event);
+    recordAttempt(statePath, event, makePolicy());
 
     // A freshly recorded attempt with none of the started-work markers
     // (lastSessionId / repoStagedAt / lastFailureContext / lastVerification) is NOT
@@ -185,7 +185,7 @@ test("claims only one rerun request per attempt", () => {
   try {
     const event = makeEvent();
     const key = eventAttemptKey(event);
-    recordAttempt(statePath, event);
+    recordAttempt(statePath, event, makePolicy());
 
     const first = claimRerunRequest(statePath, key, "runner lost network");
     assert.ok(first.claimed);
@@ -215,7 +215,7 @@ test("pending auto-merge lookup requires matching success sha when publish commi
   try {
     const event = makeEvent();
     const key = eventAttemptKey(event);
-    recordAttempt(statePath, event);
+    recordAttempt(statePath, event, makePolicy());
 
     updateAttempt(statePath, key, {
       publishedBranch: "hootline/fix/main/abc123def456",
@@ -284,6 +284,7 @@ test("normalizes persisted state without trusting malformed JSON fields", () => 
               sha: "abc123def456",
               pipelineId: "1001",
               event,
+              policy: makePolicy(),
               attempts: 1,
               firstSeenAt: "2026-06-17T00:00:00.000Z",
               lastSeenAt: "2026-06-17T00:00:00.000Z",
@@ -311,6 +312,7 @@ test("normalizes persisted state without trusting malformed JSON fields", () => 
               sha: "abc123def456",
               pipelineId: "1001",
               event,
+              policy: makePolicy(),
               attempts: 1,
               firstSeenAt: "2026-06-17T00:00:00.000Z",
               lastSeenAt: "2026-06-17T00:00:00.000Z",
@@ -322,6 +324,7 @@ test("normalizes persisted state without trusting malformed JSON fields", () => 
               sha: "abc123def456",
               pipelineId: "9999",
               event,
+              policy: makePolicy(),
               attempts: 1,
               firstSeenAt: "2026-06-17T00:00:00.000Z",
               lastSeenAt: "2026-06-17T00:00:00.000Z",
@@ -347,7 +350,7 @@ test("does not report a freshly recorded attempt with no started-work markers as
   const statePath = join(tempRoot, "state.json");
   try {
     const event = makeEvent();
-    recordAttempt(statePath, event);
+    recordAttempt(statePath, event, makePolicy());
 
     // A recorded-but-never-started attempt (no lastSessionId / repoStagedAt /
     // lastFailureContext / lastVerification and no publish fields) must not count
@@ -455,7 +458,7 @@ test("claimAutoMerge wins once and restoreAutoMergeClaim re-arms it", async () =
   try {
     const event = makeEvent();
     const key = eventAttemptKey(event);
-    recordAttempt(statePath, event);
+    recordAttempt(statePath, event, makePolicy());
     updateAttempt(statePath, key, { pendingAutoMerge: true });
 
     assert.equal(await claimAutoMerge(statePath, key), true);
@@ -491,7 +494,7 @@ test("claimRerunRequest ids are unique and not derived from request count", asyn
   try {
     const event = makeEvent();
     const key = eventAttemptKey(event);
-    recordAttempt(statePath, event);
+    recordAttempt(statePath, event, makePolicy());
 
     const claim = claimRerunRequest(statePath, key, "runner lost network");
     assert.ok(claim.claimed);

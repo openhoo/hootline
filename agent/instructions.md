@@ -14,7 +14,7 @@ with the active `attemptKey` in session auth.
 
 The turn starts with these seeded context blocks:
 
-- `Pipeline fixer state`: includes the `attemptKey`.
+- `Hootline state`: includes the `attemptKey`.
 - `Normalized pipeline event`: provider, repository, ref, SHA, pipeline/run IDs,
   actor, PR/MR target when available, and timestamps.
 - `Repository policy`: publish mode, allowed branches, allowed file globs,

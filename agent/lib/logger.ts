@@ -48,13 +48,13 @@ const NO_TRUNCATE = Number.MAX_SAFE_INTEGER;
 const LOG_LEVELS = new Set(["trace", "debug", "info", "warn", "error", "fatal", "silent"]);
 
 /**
- * Resolve the log level from `PIPELINE_FIXER_LOG_LEVEL` (consistent with the
- * other `PIPELINE_FIXER_*` env vars), defaulting to `info`. `EVE_LOG_LEVEL`
+ * Resolve the log level from `HOOTLINE_LOG_LEVEL` (consistent with the
+ * other `HOOTLINE_*` env vars), defaulting to `info`. `EVE_LOG_LEVEL`
  * separately controls Eve's own framework logs. The `env` argument is injectable
  * for testability, mirroring `resolvePipelineFixerModel`.
  */
 export function resolveLogLevel(env: NodeJS.ProcessEnv = process.env): string {
-  const level = env.PIPELINE_FIXER_LOG_LEVEL?.toLowerCase();
+  const level = env.HOOTLINE_LOG_LEVEL?.toLowerCase();
   return level !== undefined && LOG_LEVELS.has(level) ? level : "info";
 }
 

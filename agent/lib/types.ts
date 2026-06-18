@@ -19,15 +19,12 @@ export interface RepoPolicy {
   maxAttemptsPerSha: number;
   maxSnapshotBytes: number;
   autoMerge: AutoMergePolicy;
-  gitlabProjectId?: string;
   allowGitlabSecretTokenFallback: boolean;
 }
 
-export interface PipelineFixerConfig {
-  version: 1;
+export interface HootlineServiceConfig {
   statePath: string;
-  defaults: Omit<RepoPolicy, "provider" | "slug" | "gitlabProjectId">;
-  repositories: readonly RepoPolicy[];
+  repoConfigPath: string;
 }
 
 export interface NormalizedPipelineEvent {
@@ -117,6 +114,7 @@ export interface AttemptRecord {
   sha: string;
   pipelineId: string;
   event: NormalizedPipelineEvent;
+  policy: RepoPolicy;
   attempts: number;
   firstSeenAt: string;
   lastSeenAt: string;

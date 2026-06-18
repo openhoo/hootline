@@ -20,6 +20,10 @@ export const PROVIDER_DOWNLOAD_TIMEOUT_MS = 120000;
 export const MAX_LOG_BYTES = 256 * 1024;
 
 export interface ProviderClient {
+  readRepositoryFileFromDefaultBranch(
+    event: NormalizedPipelineEvent,
+    path: string,
+  ): Promise<string | null>;
   getFailureContext(event: NormalizedPipelineEvent): Promise<FailureContext>;
   downloadArchive(event: NormalizedPipelineEvent, maxSnapshotBytes: number): Promise<Buffer>;
   publishFix(input: PublishInput): Promise<PublishResult>;

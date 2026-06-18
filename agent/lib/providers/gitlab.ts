@@ -40,6 +40,35 @@ interface GitLabCommitAction {
 const log = createLogger("providers.gitlab");
 
 export class GitLabProvider implements ProviderClient {
+  async readRepositoryFileFromDefaultBranch(
+    event: NormalizedPipelineEvent,
+    path: string,
+  ): Promise<string | null> {
+    const project = await this.requestRecord(event, "GET", `/projects/${encodeProject(event)}`);
+    const defaultBranch = readString(project.default_branch);
+    if (defaultBranch === undefined) {
+      throw new Error(`GitLab project ${event.repoSlug} did not return a default branch.`);
+    }
+
+    const response = await this.requestRaw(
+      event,
+      "GET",
+      `/projects/${encodeProject(event)}/repository/files/${encodeURIComponent(path)}?ref=${encodeURIComponent(
+        defaultBranch,
+      )}`,
+    );
+    if (response.status === 404) return null;
+    const body = await parseJsonResponse(response);
+    assertResponseOk(response, body, `GitLab GET repository file ${path}`);
+    const record = requireRecord(body, `GitLab repository file ${path}`);
+    const encoding = readString(record.encoding);
+    const content = readString(record.content);
+    if (encoding !== "base64" || content === undefined) {
+      throw new Error(`GitLab repository file ${path} was not returned as base64 content.`);
+    }
+    return Buffer.from(content.replace(/\s/g, ""), "base64").toString("utf8");
+  }
+
   async getFailureContext(event: NormalizedPipelineEvent): Promise<FailureContext> {
     const jobs = await this.listFailedJobs(event);
     const summary =

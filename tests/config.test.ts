@@ -1,64 +1,73 @@
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { findRepoPolicy, loadConfig } from "../agent/lib/config.ts";
+import {
+  loadServiceConfig,
+  parseRepoPolicyConfig,
+  RepoPolicyConfigError,
+} from "../agent/lib/config.ts";
 
-test("loads config defaults and repository overrides", () => {
-  const tempRoot = mkdtempSync(join(tmpdir(), "hootline-config-"));
-  const configPath = join(tempRoot, "pipeline-fixer.yaml");
-  const previousState = process.env.PIPELINE_FIXER_STATE;
-  process.env.PIPELINE_FIXER_STATE = join(tempRoot, "state.json");
-  try {
-    writeFileSync(
-      configPath,
-      [
-        "version: 1",
-        "statePath: ignored-state.json",
-        "defaults:",
-        "  mode: pr_mr",
-        "  allowedBranches: [main]",
-        "  allowedFileGlobs: [src/**]",
-        "  verificationCommands: [npm test]",
-        "  fixBranchPrefix: hootline/fix",
-        "  maxAttemptsPerSha: 2",
-        "  maxSnapshotBytes: 1000",
-        "  autoMerge:",
-        "    requireSuccessfulPipeline: true",
-        "    deleteSourceBranch: false",
-        "repositories:",
-        "  - provider: github",
-        "    slug: owner/repo",
-        "    mode: auto_merge",
-        "    allowedFileGlobs: [src/**, tests/**]",
-        "    autoMerge:",
-        "      deleteSourceBranch: true",
-        "  - provider: gitlab",
-        "    slug: group/project",
-        "    gitlabProjectId: 123",
-        "",
-      ].join("\n"),
-    );
+test("loads Hootline service config from HOOTLINE_* env with defaults", () => {
+  assert.deepEqual(loadServiceConfig({}), {
+    statePath: "var/hootline-state.json",
+    repoConfigPath: ".hootline.yaml",
+  });
 
-    const config = loadConfig(configPath);
-    const github = findRepoPolicy(config, "github", "owner/repo");
-    const gitlab = findRepoPolicy(config, "gitlab", "group/project");
+  assert.deepEqual(
+    loadServiceConfig({
+      HOOTLINE_STATE_PATH: "var/custom-state.json",
+      HOOTLINE_REPO_CONFIG_PATH: ".config/hootline.yaml",
+    }),
+    {
+      statePath: "var/custom-state.json",
+      repoConfigPath: ".config/hootline.yaml",
+    },
+  );
+});
 
-    assert.equal(config.statePath, process.env.PIPELINE_FIXER_STATE);
-    assert.equal(github?.mode, "auto_merge");
-    assert.deepEqual(github?.allowedFileGlobs, ["src/**", "tests/**"]);
-    assert.equal(github?.autoMerge.requireSuccessfulPipeline, true);
-    assert.equal(github?.autoMerge.deleteSourceBranch, true);
-    assert.equal(gitlab?.mode, "pr_mr");
-    assert.equal(gitlab?.gitlabProjectId, "123");
-  } finally {
-    if (previousState === undefined) {
-      delete process.env.PIPELINE_FIXER_STATE;
-    } else {
-      process.env.PIPELINE_FIXER_STATE = previousState;
-    }
-    rmSync(tempRoot, { recursive: true, force: true });
-  }
+test("parses repo-local policy defaults and derives provider identity from the event", () => {
+  const policy = parseRepoPolicyConfig(
+    [
+      "version: 1",
+      "allowedBranches: [main]",
+      "allowedFileGlobs: [src/**, tests/**]",
+      "verificationCommands: [npm test]",
+      "autoMerge:",
+      "  deleteSourceBranch: true",
+      "",
+    ].join("\n"),
+    { provider: "github", slug: "owner/repo" },
+  );
+
+  assert.equal(policy.provider, "github");
+  assert.equal(policy.slug, "owner/repo");
+  assert.equal(policy.mode, "pr_mr");
+  assert.deepEqual(policy.allowedBranches, ["main"]);
+  assert.deepEqual(policy.allowedFileGlobs, ["src/**", "tests/**"]);
+  assert.deepEqual(policy.verificationCommands, ["npm test"]);
+  assert.deepEqual(policy.sandboxNetworkAllow, []);
+  assert.equal(policy.fixBranchPrefix, "hootline/fix");
+  assert.equal(policy.maxAttemptsPerSha, 2);
+  assert.equal(policy.maxSnapshotBytes, 50 * 1024 * 1024);
+  assert.equal(policy.autoMerge.requireSuccessfulPipeline, true);
+  assert.equal(policy.autoMerge.deleteSourceBranch, true);
+});
+
+test("rejects invalid repo-local policy config", () => {
+  assert.throws(
+    () => parseRepoPolicyConfig("version: 2\n", { provider: "github", slug: "owner/repo" }),
+    RepoPolicyConfigError,
+  );
+  assert.throws(
+    () =>
+      parseRepoPolicyConfig("version: 1\nmaxAttemptsPerSha: 0\n", {
+        provider: "gitlab",
+        slug: "group/project",
+      }),
+    /Repository Hootline config is invalid/,
+  );
+  assert.throws(
+    () => parseRepoPolicyConfig("version: [", { provider: "github", slug: "owner/repo" }),
+    /not valid YAML/,
+  );
 });

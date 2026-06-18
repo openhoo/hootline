@@ -4,6 +4,7 @@ import { dirname, resolve } from "node:path";
 
 import { z } from "zod";
 
+import { repoPolicySchema } from "./config.ts";
 import type {
   AttemptRecord,
   NormalizedPipelineEvent,
@@ -145,6 +146,7 @@ const attemptRecordSchema = z
     sha: z.string(),
     pipelineId: z.string(),
     event: normalizedPipelineEventSchema,
+    policy: repoPolicySchema,
     attempts: z.number().int().nonnegative(),
     firstSeenAt: z.string(),
     lastSeenAt: z.string(),
@@ -234,7 +236,11 @@ export function releaseDelivery(path: string, deliveryKey: string): Promise<void
   });
 }
 
-export function recordAttempt(path: string, event: NormalizedPipelineEvent): AttemptRecord {
+export function recordAttempt(
+  path: string,
+  event: NormalizedPipelineEvent,
+  policy: RepoPolicy,
+): AttemptRecord {
   const state = loadState(path);
   const key = eventAttemptKey(event);
   const now = new Date().toISOString();
@@ -248,6 +254,7 @@ export function recordAttempt(path: string, event: NormalizedPipelineEvent): Att
           sha: event.sha,
           pipelineId: event.pipelineId,
           event,
+          policy,
           attempts: 1,
           firstSeenAt: now,
           lastSeenAt: now,
@@ -285,7 +292,7 @@ export function claimRepairSlot(
     // Mirror the legacy boundary: recording one more must not exceed the cap.
     if (existingCount + 1 > policy.maxAttemptsPerSha) return { decision: "max_attempts" };
 
-    const attempt = recordAttempt(path, event);
+    const attempt = recordAttempt(path, event, policy);
     // Mark the slot dispatched in the same critical section so a concurrent event for
     // the same sha (e.g. GitHub's paired workflow_run + check_suite, which carry the
     // same sha under different pipeline ids) immediately sees the repair as in

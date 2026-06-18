@@ -1,8 +1,8 @@
-import { findRepoPolicy, loadConfig } from "./config.ts";
+import { loadServiceConfig } from "./config.ts";
 import { assertSandboxSnapshotReady } from "./sandbox.ts";
 import { getAttempt } from "./state.ts";
 import { readOptionalString } from "./tool-input.ts";
-import type { AttemptRecord, PipelineFixerConfig, RepoPolicy } from "./types.ts";
+import type { AttemptRecord, HootlineServiceConfig, RepoPolicy } from "./types.ts";
 import type { UnknownRecord } from "./unknown.ts";
 
 /**
@@ -24,7 +24,7 @@ type RuntimeContext<S extends SnapshotReadySandbox = SnapshotReadySandbox> = {
 };
 
 export interface CurrentAttemptContext {
-  config: PipelineFixerConfig;
+  config: HootlineServiceConfig;
   attempt: AttemptRecord;
   policy: RepoPolicy;
 }
@@ -38,7 +38,7 @@ export function resolveCurrentAttempt(
   ctx: RuntimeContext,
   attemptKey?: string,
 ): CurrentAttemptContext {
-  const config = loadConfig();
+  const config = loadServiceConfig();
   const key = attemptKey ?? readAttemptKey(ctx);
   if (key === undefined) {
     throw new Error("No attemptKey was supplied and none was available in session auth.");
@@ -47,11 +47,7 @@ export function resolveCurrentAttempt(
   if (attempt === undefined) {
     throw new Error(`No pipeline fixer attempt exists for key ${key}.`);
   }
-  const policy = findRepoPolicy(config, attempt.event.provider, attempt.event.repoSlug);
-  if (policy === undefined) {
-    throw new Error(`No policy configured for ${attempt.event.provider}:${attempt.event.repoSlug}.`);
-  }
-  return { config, attempt, policy };
+  return { config, attempt, policy: attempt.policy };
 }
 
 export function assertSnapshotStaged(attempt: AttemptRecord): void {

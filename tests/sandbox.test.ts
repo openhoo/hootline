@@ -227,6 +227,7 @@ function makeAttempt(): AttemptRecord {
     firstSeenAt: "2026-06-17T00:00:00.000Z",
     lastSeenAt: "2026-06-17T00:00:00.000Z",
     repoStagedAt: "2026-06-17T00:00:00.000Z",
+    policy: makePolicy(),
     event: {
       provider: "github",
       id: "github:owner/repo:1001:abc123",

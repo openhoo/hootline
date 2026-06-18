@@ -137,8 +137,8 @@ test("logError normalizes non-Error throwables and redacts them", () => {
   assert.ok(typeof err?.["message"] === "string");
 });
 
-test("resolveLogLevel honors PIPELINE_FIXER_LOG_LEVEL and defaults to info", () => {
+test("resolveLogLevel honors HOOTLINE_LOG_LEVEL and defaults to info", () => {
   assert.equal(resolveLogLevel({}), "info");
-  assert.equal(resolveLogLevel({ PIPELINE_FIXER_LOG_LEVEL: "DEBUG" }), "debug");
-  assert.equal(resolveLogLevel({ PIPELINE_FIXER_LOG_LEVEL: "bogus" }), "info");
+  assert.equal(resolveLogLevel({ HOOTLINE_LOG_LEVEL: "DEBUG" }), "debug");
+  assert.equal(resolveLogLevel({ HOOTLINE_LOG_LEVEL: "bogus" }), "info");
 });

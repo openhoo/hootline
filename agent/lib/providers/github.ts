@@ -47,6 +47,34 @@ const tokenCache = new Map<string, CachedToken>();
 const log = createLogger("providers.github");
 
 export class GitHubProvider implements ProviderClient {
+  async readRepositoryFileFromDefaultBranch(
+    event: NormalizedPipelineEvent,
+    path: string,
+  ): Promise<string | null> {
+    const repo = await this.requestRecord(event, "GET", `/repos/${event.repoSlug}`);
+    const defaultBranch = readString(repo.default_branch);
+    if (defaultBranch === undefined) {
+      throw new Error(`GitHub repository ${event.repoSlug} did not return a default branch.`);
+    }
+
+    const response = await this.requestRaw(
+      event,
+      "GET",
+      `/repos/${event.repoSlug}/contents/${encodeGitHubPath(path)}?ref=${encodeURIComponent(defaultBranch)}`,
+    );
+    if (response.status === 404) return null;
+    const body = await parseJsonResponse(response);
+    assertResponseOk(response, body, `GitHub GET repository file ${path}`);
+    const record = requireRecord(body, `GitHub repository file ${path}`);
+    if (readString(record.type) !== "file") return null;
+    const encoding = readString(record.encoding);
+    const content = readString(record.content);
+    if (encoding !== "base64" || content === undefined) {
+      throw new Error(`GitHub repository file ${path} was not returned as base64 content.`);
+    }
+    return Buffer.from(content.replace(/\s/g, ""), "base64").toString("utf8");
+  }
+
   async getFailureContext(event: NormalizedPipelineEvent): Promise<FailureContext> {
     const jobs =
       event.runId !== undefined
@@ -480,6 +508,10 @@ function createGitHubJwt(appId: string, privateKey: string): string {
 
 function encodeGitHubRefName(ref: string): string {
   return ref.split("/").map(encodeURIComponent).join("/");
+}
+
+function encodeGitHubPath(path: string): string {
+  return path.split("/").map(encodeURIComponent).join("/");
 }
 
 function buildChangeBody(event: NormalizedPipelineEvent, summary: string): string {

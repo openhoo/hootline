@@ -1,12 +1,7 @@
-import { readFileSync } from "node:fs";
-import { resolve } from "node:path";
 import { parse } from "yaml";
 import { z } from "zod";
 
-import { createLogger, logError } from "./logger.ts";
-import type { PipelineFixerConfig, Provider, RepoPolicy } from "./types.ts";
-
-const log = createLogger("lib.config");
+import type { HootlineServiceConfig, Provider, RepoPolicy } from "./types.ts";
 
 const publishModeSchema = z.enum(["pr_mr", "push_branch", "auto_merge"]);
 
@@ -17,7 +12,7 @@ const autoMergeSchema = z
   })
   .default({});
 
-const defaultsSchema = z.object({
+const repoPolicyFieldsSchema = z.object({
   mode: publishModeSchema.default("pr_mr"),
   allowedBranches: z.array(z.string().min(1)).default(["*"]),
   allowedFileGlobs: z.array(z.string().min(1)).default(["**"]),
@@ -30,73 +25,64 @@ const defaultsSchema = z.object({
   allowGitlabSecretTokenFallback: z.boolean().default(false),
 });
 
-const repoSchema = z.object({
+const repoPolicyConfigSchema = repoPolicyFieldsSchema.extend({
+  version: z.literal(1),
+});
+
+export const repoPolicySchema = repoPolicyFieldsSchema.extend({
   provider: z.enum(["github", "gitlab"]),
   slug: z.string().min(1),
-  mode: publishModeSchema.optional(),
-  allowedBranches: z.array(z.string().min(1)).optional(),
-  allowedFileGlobs: z.array(z.string().min(1)).optional(),
-  verificationCommands: z.array(z.string().min(1)).optional(),
-  sandboxNetworkAllow: z.array(z.string().min(1)).optional(),
-  fixBranchPrefix: z.string().min(1).optional(),
-  maxAttemptsPerSha: z.number().int().positive().optional(),
-  maxSnapshotBytes: z.number().int().positive().optional(),
-  autoMerge: autoMergeSchema.optional(),
-  gitlabProjectId: z.union([z.string(), z.number()]).optional(),
-  allowGitlabSecretTokenFallback: z.boolean().optional(),
 });
 
-const configSchema = z.object({
-  version: z.literal(1),
-  statePath: z.string().min(1).default("var/pipeline-fixer-state.json"),
-  defaults: defaultsSchema.default({}),
-  repositories: z.array(repoSchema).default([]),
-});
-
-type ConfigDefaults = z.infer<typeof defaultsSchema>;
-type RepoInput = z.infer<typeof repoSchema>;
-
-export function loadConfig(path = process.env.PIPELINE_FIXER_CONFIG): PipelineFixerConfig {
-  const configPath = resolve(path ?? "config/pipeline-fixer.yaml");
-  let parsed: z.infer<typeof configSchema>;
-  try {
-    parsed = configSchema.parse(parse(readFileSync(configPath, "utf8")) ?? {});
-  } catch (error) {
-    // configPath is a filesystem path (not a secret); the error is redacted by the
-    // logger in case a parse error echoes file content.
-    logError(log, "failed to load pipeline-fixer config", error, { configPath });
-    throw error;
+export class RepoPolicyConfigError extends Error {
+  constructor(message: string, options?: ErrorOptions) {
+    super(message, options);
+    this.name = "RepoPolicyConfigError";
   }
-  const repositories = parsed.repositories.map((repo) => buildRepoPolicy(parsed.defaults, repo));
+}
+
+export function loadServiceConfig(env: NodeJS.ProcessEnv = process.env): HootlineServiceConfig {
+  return {
+    statePath: readNonEmpty(env.HOOTLINE_STATE_PATH) ?? "var/hootline-state.json",
+    repoConfigPath: readNonEmpty(env.HOOTLINE_REPO_CONFIG_PATH) ?? ".hootline.yaml",
+  };
+}
+
+export function parseRepoPolicyConfig(
+  text: string,
+  input: { provider: Provider; slug: string },
+): RepoPolicy {
+  let value: unknown;
+  try {
+    value = parse(text) ?? {};
+  } catch (error) {
+    throw new RepoPolicyConfigError("Repository Hootline config is not valid YAML.", { cause: error });
+  }
+
+  const parsed = repoPolicyConfigSchema.safeParse(value);
+  if (!parsed.success) {
+    throw new RepoPolicyConfigError(`Repository Hootline config is invalid: ${parsed.error.message}`, {
+      cause: parsed.error,
+    });
+  }
 
   return {
-    version: parsed.version,
-    statePath: process.env.PIPELINE_FIXER_STATE ?? parsed.statePath,
-    defaults: parsed.defaults,
-    repositories,
+    provider: input.provider,
+    slug: input.slug,
+    mode: parsed.data.mode,
+    allowedBranches: parsed.data.allowedBranches,
+    allowedFileGlobs: parsed.data.allowedFileGlobs,
+    verificationCommands: parsed.data.verificationCommands,
+    sandboxNetworkAllow: parsed.data.sandboxNetworkAllow,
+    fixBranchPrefix: parsed.data.fixBranchPrefix,
+    maxAttemptsPerSha: parsed.data.maxAttemptsPerSha,
+    maxSnapshotBytes: parsed.data.maxSnapshotBytes,
+    autoMerge: parsed.data.autoMerge,
+    allowGitlabSecretTokenFallback: parsed.data.allowGitlabSecretTokenFallback,
   };
 }
 
-export function findRepoPolicy(config: PipelineFixerConfig, provider: Provider, slug: string): RepoPolicy | undefined {
-  return config.repositories.find((repo) => repo.provider === provider && repo.slug === slug);
-}
-
-function buildRepoPolicy(defaults: ConfigDefaults, repo: RepoInput): RepoPolicy {
-  const policy: RepoPolicy = {
-    provider: repo.provider,
-    slug: repo.slug,
-    mode: repo.mode ?? defaults.mode,
-    allowedBranches: repo.allowedBranches ?? defaults.allowedBranches,
-    allowedFileGlobs: repo.allowedFileGlobs ?? defaults.allowedFileGlobs,
-    verificationCommands: repo.verificationCommands ?? defaults.verificationCommands,
-    sandboxNetworkAllow: repo.sandboxNetworkAllow ?? defaults.sandboxNetworkAllow,
-    fixBranchPrefix: repo.fixBranchPrefix ?? defaults.fixBranchPrefix,
-    maxAttemptsPerSha: repo.maxAttemptsPerSha ?? defaults.maxAttemptsPerSha,
-    maxSnapshotBytes: repo.maxSnapshotBytes ?? defaults.maxSnapshotBytes,
-    autoMerge: { ...defaults.autoMerge, ...(repo.autoMerge ?? {}) },
-    allowGitlabSecretTokenFallback:
-      repo.allowGitlabSecretTokenFallback ?? defaults.allowGitlabSecretTokenFallback,
-  };
-  if (repo.gitlabProjectId !== undefined) policy.gitlabProjectId = String(repo.gitlabProjectId);
-  return policy;
+function readNonEmpty(value: string | undefined): string | undefined {
+  const trimmed = value?.trim();
+  return trimmed === "" ? undefined : trimmed;
 }

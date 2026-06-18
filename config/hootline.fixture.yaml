@@ -1,0 +1,19 @@
+version: 1
+
+mode: pr_mr
+allowedBranches:
+  - main
+allowedFileGlobs:
+  - src/**
+  - test/**
+  - package.json
+verificationCommands:
+  - npm test
+sandboxNetworkAllow: []
+fixBranchPrefix: hootline/fix
+maxAttemptsPerSha: 2
+maxSnapshotBytes: 10485760
+allowGitlabSecretTokenFallback: false
+autoMerge:
+  requireSuccessfulPipeline: true
+  deleteSourceBranch: true

@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import assert from "node:assert/strict";
@@ -6,14 +6,14 @@ import test from "node:test";
 
 import { resolveCurrentAttempt } from "../agent/lib/current.ts";
 import { eventAttemptKey, recordAttempt } from "../agent/lib/state.ts";
-import type { NormalizedPipelineEvent } from "../agent/lib/types.ts";
+import type { NormalizedPipelineEvent, RepoPolicy } from "../agent/lib/types.ts";
 import type { UnknownRecord } from "../agent/lib/unknown.ts";
 
 test("resolveCurrentAttempt reads the attemptKey from session auth attributes", () => {
   withFixture(({ statePath }) => {
     const event = makeEvent();
     const key = eventAttemptKey(event);
-    recordAttempt(statePath, event);
+    recordAttempt(statePath, event, makePolicy());
 
     const ctx = makeContext(key);
     const resolved = resolveCurrentAttempt(ctx);
@@ -28,7 +28,7 @@ test("resolveCurrentAttempt prefers an explicit attemptKey over the session valu
   withFixture(({ statePath }) => {
     const sessionEvent = makeEvent();
     const sessionKey = eventAttemptKey(sessionEvent);
-    recordAttempt(statePath, sessionEvent);
+    recordAttempt(statePath, sessionEvent, makePolicy());
 
     const explicitEvent = makeEvent({
       id: "github:owner/repo:2002:def456abc123",
@@ -39,7 +39,7 @@ test("resolveCurrentAttempt prefers an explicit attemptKey over the session valu
       sha: "def456abc123",
     });
     const explicitKey = eventAttemptKey(explicitEvent);
-    recordAttempt(statePath, explicitEvent);
+    recordAttempt(statePath, explicitEvent, makePolicy());
     assert.notEqual(explicitKey, sessionKey);
 
     const ctx = makeContext(sessionKey);
@@ -78,52 +78,34 @@ test("resolveCurrentAttempt throws when the key has no attempt record", () => {
   });
 });
 
-test("resolveCurrentAttempt throws when the attempt's repo has no policy", () => {
+test("resolveCurrentAttempt returns the stored policy snapshot", () => {
   withFixture(({ statePath }) => {
     const event = makeEvent({
       id: "github:other/repo:1001:abc123def456",
       repoSlug: "other/repo",
     });
     const key = eventAttemptKey(event);
-    recordAttempt(statePath, event);
+    recordAttempt(statePath, event, makePolicy({ slug: "other/repo", allowedBranches: ["release/**"] }));
 
     const ctx = makeContext(key);
-    assert.throws(
-      () => resolveCurrentAttempt(ctx),
-      /No policy configured for github:other\/repo\./,
-    );
+    const resolved = resolveCurrentAttempt(ctx);
+    assert.equal(resolved.policy.slug, "other/repo");
+    assert.deepEqual(resolved.policy.allowedBranches, ["release/**"]);
   });
 });
 
-type Fixture = { configPath: string; statePath: string };
+type Fixture = { statePath: string };
 
 function withFixture(run: (fixture: Fixture) => void): void {
   const tempRoot = mkdtempSync(join(tmpdir(), "hootline-current-"));
-  const configPath = join(tempRoot, "pipeline-fixer.yaml");
   const statePath = join(tempRoot, "state.json");
-  writeFileSync(
-    configPath,
-    [
-      "version: 1",
-      `statePath: ${statePath}`,
-      "defaults:",
-      "  allowedBranches: [main]",
-      "repositories:",
-      "  - provider: github",
-      "    slug: owner/repo",
-      "",
-    ].join("\n"),
-  );
 
-  const previousConfig = process.env.PIPELINE_FIXER_CONFIG;
-  const previousState = process.env.PIPELINE_FIXER_STATE;
-  process.env.PIPELINE_FIXER_CONFIG = configPath;
-  process.env.PIPELINE_FIXER_STATE = statePath;
+  const previousState = process.env.HOOTLINE_STATE_PATH;
+  process.env.HOOTLINE_STATE_PATH = statePath;
   try {
-    run({ configPath, statePath });
+    run({ statePath });
   } finally {
-    restoreEnv("PIPELINE_FIXER_CONFIG", previousConfig);
-    restoreEnv("PIPELINE_FIXER_STATE", previousState);
+    restoreEnv("HOOTLINE_STATE_PATH", previousState);
     rmSync(tempRoot, { recursive: true, force: true });
   }
 }
@@ -165,4 +147,22 @@ function makeEvent(overrides: Partial<NormalizedPipelineEvent> = {}): Normalized
     receivedAt: "2026-06-17T00:00:00.000Z",
   };
   return { ...event, ...overrides };
+}
+
+function makePolicy(overrides: Partial<RepoPolicy> = {}): RepoPolicy {
+  const policy: RepoPolicy = {
+    provider: "github",
+    slug: "owner/repo",
+    mode: "pr_mr",
+    allowedBranches: ["main"],
+    allowedFileGlobs: ["**/*"],
+    verificationCommands: [],
+    sandboxNetworkAllow: [],
+    fixBranchPrefix: "hootline/fix",
+    maxAttemptsPerSha: 3,
+    maxSnapshotBytes: 1024,
+    autoMerge: { deleteSourceBranch: false, requireSuccessfulPipeline: true },
+    allowGitlabSecretTokenFallback: false,
+  };
+  return { ...policy, ...overrides };
 }

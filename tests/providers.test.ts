@@ -29,6 +29,92 @@ test("provider API errors redact token-shaped response bodies", () => {
   );
 });
 
+test("GitHub reads repo config from the default branch and returns null for missing files", async () => {
+  const previousFetch = globalThis.fetch;
+  const previousAppId = process.env.GITHUB_APP_ID;
+  const previousPrivateKey = process.env.GITHUB_APP_PRIVATE_KEY;
+  const { privateKey } = generateKeyPairSync("rsa", { modulusLength: 2048 });
+  const calls: ProviderCall[] = [];
+
+  process.env.GITHUB_APP_ID = "config-fetch-test";
+  process.env.GITHUB_APP_PRIVATE_KEY = privateKey
+    .export({ format: "pem", type: "pkcs8" })
+    .toString();
+  globalThis.fetch = async (input, init = {}) => {
+    const call = readCall(input, init);
+    calls.push(call);
+    if (call.path === "/app/installations/123/access_tokens") {
+      return jsonResponse({ token: "ghs_installation_secret", expires_at: futureIso() });
+    }
+    if (call.path === "/repos/owner/repo") {
+      return jsonResponse({ default_branch: "trunk" });
+    }
+    if (call.path === "/repos/owner/repo/contents/.hootline.yaml?ref=trunk") {
+      return jsonResponse({
+        type: "file",
+        encoding: "base64",
+        content: Buffer.from("version: 1\nallowedBranches: [main]\n").toString("base64"),
+      });
+    }
+    if (call.path === "/repos/owner/repo/contents/missing.yaml?ref=trunk") {
+      return jsonResponse({ message: "Not Found" }, 404);
+    }
+    throw new Error(`Unexpected GitHub request: ${call.method} ${call.path}`);
+  };
+
+  try {
+    const provider = new GitHubProvider();
+    assert.equal(
+      await provider.readRepositoryFileFromDefaultBranch(makeGitHubEvent(), ".hootline.yaml"),
+      "version: 1\nallowedBranches: [main]\n",
+    );
+    assert.equal(await provider.readRepositoryFileFromDefaultBranch(makeGitHubEvent(), "missing.yaml"), null);
+    assert.equal(calls.some((call) => call.path === "/repos/owner/repo"), true);
+  } finally {
+    globalThis.fetch = previousFetch;
+    restoreEnv("GITHUB_APP_ID", previousAppId);
+    restoreEnv("GITHUB_APP_PRIVATE_KEY", previousPrivateKey);
+  }
+});
+
+test("GitLab reads repo config from the default branch and returns null for missing files", async () => {
+  const previousFetch = globalThis.fetch;
+  const previousToken = process.env.GITLAB_TOKEN;
+  const previousBaseUrl = process.env.GITLAB_BASE_URL;
+
+  process.env.GITLAB_TOKEN = "glpat-secret";
+  process.env.GITLAB_BASE_URL = "https://gitlab.example.test";
+  globalThis.fetch = async (input, init = {}) => {
+    const call = readCall(input, init);
+    if (call.path === "/api/v4/projects/55") {
+      return jsonResponse({ default_branch: "main" });
+    }
+    if (call.path === "/api/v4/projects/55/repository/files/.hootline.yaml?ref=main") {
+      return jsonResponse({
+        encoding: "base64",
+        content: Buffer.from("version: 1\nallowedBranches: [main]\n").toString("base64"),
+      });
+    }
+    if (call.path === "/api/v4/projects/55/repository/files/missing.yaml?ref=main") {
+      return jsonResponse({ message: "Not Found" }, 404);
+    }
+    throw new Error(`Unexpected GitLab request: ${call.method} ${call.path}`);
+  };
+
+  try {
+    const provider = new GitLabProvider();
+    assert.equal(
+      await provider.readRepositoryFileFromDefaultBranch(makeGitLabEvent(), ".hootline.yaml"),
+      "version: 1\nallowedBranches: [main]\n",
+    );
+    assert.equal(await provider.readRepositoryFileFromDefaultBranch(makeGitLabEvent(), "missing.yaml"), null);
+  } finally {
+    globalThis.fetch = previousFetch;
+    restoreEnv("GITLAB_TOKEN", previousToken);
+    restoreEnv("GITLAB_BASE_URL", previousBaseUrl);
+  }
+});
+
 test("GitHub publish creates base64 blobs instead of UTF-8 tree content", async () => {
   const previousFetch = globalThis.fetch;
   const previousAppId = process.env.GITHUB_APP_ID;

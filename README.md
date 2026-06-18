@@ -23,7 +23,7 @@ works inside Eve's sandbox after calling `stage_repository_snapshot`, edits
   - `auto_merge`: create or update a PR/MR and record it for deterministic merge
     after a successful follow-up pipeline webhook.
 - Guardrails:
-  - Repository allowlist in `config/pipeline-fixer.yaml`.
+  - Repository opt-in through a default-branch `.hootline.yaml`.
   - Branch allowlist before a repair starts.
   - File allowlist before publishing.
   - Maximum attempts per provider/repo/SHA/pipeline key.
@@ -41,11 +41,16 @@ Install dependencies:
 npm install
 ```
 
-Create local policy and environment files:
+Create a local service environment file:
 
 ```sh
-cp config/pipeline-fixer.example.yaml config/pipeline-fixer.yaml
 cp .env.example .env.local
+```
+
+Commit a Hootline policy file to every repository Hootline should repair:
+
+```sh
+cp config/hootline.example.yaml /path/to/repo/.hootline.yaml
 ```
 
 Start the local Eve daemon:
@@ -63,27 +68,28 @@ Expose that daemon with your tunnel of choice and configure provider webhooks:
 
 Core settings:
 
-- `PIPELINE_FIXER_CONFIG`: policy file path. Defaults to
-  `config/pipeline-fixer.yaml`.
-- `PIPELINE_FIXER_STATE`: overrides the config `statePath`.
-- `PIPELINE_FIXER_LOG_LEVEL`: Hootline log level,
+- `HOOTLINE_STATE_PATH`: durable JSON state file for delivery dedupe, attempts,
+  verification results, publish records, rerun records, and pending auto-merge
+  records. Defaults to `var/hootline-state.json`.
+- `HOOTLINE_REPO_CONFIG_PATH`: repo-local policy path. Defaults to
+  `.hootline.yaml`.
+- `HOOTLINE_LOG_LEVEL`: Hootline log level,
   `trace|debug|info|warn|error|fatal|silent`. Defaults to `info`.
 - `EVE_LOG_LEVEL`: Eve framework log level.
 
 Model settings:
 
-- `PIPELINE_FIXER_MODEL_PROVIDER`: one of `anthropic`, `openai`,
+- `HOOTLINE_MODEL_PROVIDER`: one of `anthropic`, `openai`,
   `openai-compatible`, or `gateway`. Defaults to `anthropic`.
-- `PIPELINE_FIXER_MODEL`: model id. Defaults depend on provider:
+- `HOOTLINE_MODEL`: model id. Defaults depend on provider:
   `claude-sonnet-4-6`, `gpt-5.1`, `gpt-oss-120b`, or
   `anthropic/claude-sonnet-4.6`.
-- `PIPELINE_FIXER_MODEL_CONTEXT_WINDOW_TOKENS`: optional for direct providers,
+- `HOOTLINE_MODEL_CONTEXT_WINDOW_TOKENS`: optional for direct providers,
   required for `openai-compatible`. Must be between `4096` and `2000000`.
-- `PIPELINE_FIXER_MODEL_API_KEY`: provider-specific override credential.
-- `PIPELINE_FIXER_MODEL_BASE_URL`: optional for direct Anthropic/OpenAI,
+- `HOOTLINE_MODEL_API_KEY`: provider-specific override credential.
+- `HOOTLINE_MODEL_BASE_URL`: optional for direct Anthropic/OpenAI,
   required for `openai-compatible`.
-- `PIPELINE_FIXER_MODEL_PROVIDER_NAME`: metadata label for
-  `openai-compatible`.
+- `HOOTLINE_MODEL_PROVIDER_NAME`: metadata label for `openai-compatible`.
 - `ANTHROPIC_API_KEY` or `ANTHROPIC_AUTH_TOKEN`: direct Anthropic credential.
 - `OPENAI_API_KEY`: direct OpenAI credential.
 - `AI_GATEWAY_API_KEY` or `VERCEL_OIDC_TOKEN`: explicit gateway mode credential.
@@ -109,56 +115,46 @@ GitLab settings:
 Direct Anthropic:
 
 ```sh
-PIPELINE_FIXER_MODEL_PROVIDER=anthropic
-PIPELINE_FIXER_MODEL=claude-sonnet-4-6
+HOOTLINE_MODEL_PROVIDER=anthropic
+HOOTLINE_MODEL=claude-sonnet-4-6
 ANTHROPIC_API_KEY=...
 ```
 
 Direct OpenAI:
 
 ```sh
-PIPELINE_FIXER_MODEL_PROVIDER=openai
-PIPELINE_FIXER_MODEL=gpt-5.1
+HOOTLINE_MODEL_PROVIDER=openai
+HOOTLINE_MODEL=gpt-5.1
 OPENAI_API_KEY=...
 ```
 
 Local or hosted OpenAI-compatible endpoint:
 
 ```sh
-PIPELINE_FIXER_MODEL_PROVIDER=openai-compatible
-PIPELINE_FIXER_MODEL=local-coder
-PIPELINE_FIXER_MODEL_BASE_URL=http://127.0.0.1:11434/v1
-PIPELINE_FIXER_MODEL_CONTEXT_WINDOW_TOKENS=131072
-PIPELINE_FIXER_MODEL_API_KEY=...
+HOOTLINE_MODEL_PROVIDER=openai-compatible
+HOOTLINE_MODEL=local-coder
+HOOTLINE_MODEL_BASE_URL=http://127.0.0.1:11434/v1
+HOOTLINE_MODEL_CONTEXT_WINDOW_TOKENS=131072
+HOOTLINE_MODEL_API_KEY=...
 ```
 
 Explicit AI Gateway:
 
 ```sh
-PIPELINE_FIXER_MODEL_PROVIDER=gateway
-PIPELINE_FIXER_MODEL=anthropic/claude-sonnet-4.6
+HOOTLINE_MODEL_PROVIDER=gateway
+HOOTLINE_MODEL=anthropic/claude-sonnet-4.6
 AI_GATEWAY_API_KEY=...
 ```
 
 ## Policy Configuration
 
-Hootline reads `version: 1` YAML from `PIPELINE_FIXER_CONFIG`.
-`config/pipeline-fixer.example.yaml` is the canonical starting point.
-
-Top-level fields:
-
-- `statePath`: durable JSON state file for delivery dedupe, attempts,
-  verification results, publish records, rerun records, and pending auto-merge
-  records.
-- `defaults`: inherited repository policy.
-- `repositories`: provider-specific repositories Hootline may repair.
+Hootline reads `version: 1` YAML from the target repository's default-branch
+`.hootline.yaml`. `config/hootline.example.yaml` is the canonical starting
+point. Missing `.hootline.yaml` means the repository is not configured for
+repairs.
 
 Repository policy fields:
 
-- `provider`: `github` or `gitlab`.
-- `slug`: `owner/repo` for GitHub, `group/project` for GitLab.
-- `gitlabProjectId`: optional numeric or URL-encoded GitLab project id when the
-  API path should differ from `slug`.
 - `mode`: `pr_mr`, `push_branch`, or `auto_merge`.
 - `allowedBranches`: event refs that may start repairs.
 - `allowedFileGlobs`: changed paths that `publish_fix` may publish.
@@ -257,10 +253,8 @@ secret. For older integrations that only send `X-Gitlab-Token`, set
 `GITLAB_SECRET_TOKEN` and opt in per repository:
 
 ```yaml
-repositories:
-  - provider: gitlab
-    slug: group/project
-    allowGitlabSecretTokenFallback: true
+version: 1
+allowGitlabSecretTokenFallback: true
 ```
 
 The fallback is weaker than Standard Webhook signatures and is rejected unless
@@ -270,7 +264,7 @@ policy explicitly enables it.
 
 Each repair session starts with four seeded context blocks:
 
-- `Pipeline fixer state`: the active `attemptKey`.
+- `Hootline state`: the active `attemptKey`.
 - `Normalized pipeline event`: provider, repo, ref, SHA, pipeline/run ids,
   actor, and PR/MR metadata when available.
 - `Repository policy`: publish mode, allowed branches, allowed file globs,
@@ -312,7 +306,7 @@ value is passed through `agent/lib/redact.ts` before it is written.
 - Logged errors include stable redacted `errorId` values for support
   correlation.
 
-Tests run with `PIPELINE_FIXER_LOG_LEVEL=silent` so application logs do not
+Tests run with `HOOTLINE_LOG_LEVEL=silent` so application logs do not
 interleave with test output.
 
 ## Architecture Notes
@@ -349,6 +343,6 @@ Full local verification:
 npm run typecheck
 npm test
 npm run check:model-matrix
-ANTHROPIC_API_KEY=test PIPELINE_FIXER_MODEL_PROVIDER=anthropic PIPELINE_FIXER_MODEL=claude-sonnet-4-6 npm run info
-ANTHROPIC_API_KEY=test PIPELINE_FIXER_MODEL_PROVIDER=anthropic PIPELINE_FIXER_MODEL=claude-sonnet-4-6 npm run build
+ANTHROPIC_API_KEY=test HOOTLINE_MODEL_PROVIDER=anthropic HOOTLINE_MODEL=claude-sonnet-4-6 npm run info
+ANTHROPIC_API_KEY=test HOOTLINE_MODEL_PROVIDER=anthropic HOOTLINE_MODEL=claude-sonnet-4-6 npm run build
 ```
