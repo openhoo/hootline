@@ -27,7 +27,7 @@ const ownerType = options.ownerType ?? "user";
 const outputDir = resolve(options.outputDir ?? "var/github-app");
 const callbackUrl = `http://${host}:${port}/callback`;
 const state = crypto.randomUUID();
-const manifest = buildManifest({ appName, callbackUrl, webhookUrl });
+const manifest = buildManifest({ appName, callbackUrl, webhookUrl, repoUrl: options.repoUrl });
 
 const server = createServer(async (req, res) => {
   const url = new URL(req.url ?? "/", `http://${host}:${port}`);
@@ -73,10 +73,10 @@ server.listen(port, host, () => {
   console.log("Open the local URL above and submit the manifest form.");
 });
 
-function buildManifest({ appName, callbackUrl, webhookUrl }) {
+function buildManifest({ appName, callbackUrl, webhookUrl, repoUrl }) {
   return {
     name: appName,
-    url: "https://github.com/wakemeup0/hootline",
+    url: repoUrl ?? "https://github.com/owner/repo",
     hook_attributes: {
       url: webhookUrl,
       active: true,
@@ -208,6 +208,7 @@ Options:
   --port <port>             Local callback server port. Default: ${DEFAULT_PORT}.
   --owner-type <user|org>   Register under your user or an organization. Default: user.
   --owner <login>           Required with --owner-type org.
+  --repo-url <url>          Public project URL shown on the GitHub App.
   --output-dir <path>       Credential output directory. Default: var/github-app.
 `);
 }

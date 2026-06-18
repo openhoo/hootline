@@ -2,6 +2,7 @@ node_modules/
 .eve/
 .output/
 .workflow-data/
+.claude/
 .env
 .env.*
 !.env.example

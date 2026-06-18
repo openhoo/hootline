@@ -22,5 +22,5 @@ defaults:
 
 repositories:
   - provider: github
-    slug: wakemeup0/hootline-pipeline-fixture
+    slug: owner/hootline-pipeline-fixture
     mode: pr_mr
