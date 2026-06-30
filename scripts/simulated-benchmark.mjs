@@ -14,10 +14,13 @@ import {
 import { createServer } from "node:net";
 import { dirname, resolve, sep } from "node:path";
 import { pathToFileURL } from "node:url";
+import YAML from "yaml";
 
 import {
   applyScenarioMutation,
   assertScenarioBaseline,
+  projectIds,
+  resolveProjects,
   resolveScenarios,
   scenarioExpectedRepairFiles,
   scenarioMutations,
@@ -39,15 +42,14 @@ import {
 
 const DEFAULTS = {
   concurrency: readEnvInteger("HOOTLINE_SIMULATED_CONCURRENCY", 1),
-  fixtureTemplatePath:
-    process.env.HOOTLINE_SIMULATED_FIXTURE_TEMPLATE_PATH ??
-    "benchmarks/fixtures/pipeline-repo",
+  fixtureTemplatePath: process.env.HOOTLINE_SIMULATED_FIXTURE_TEMPLATE_PATH,
   mainBranch: process.env.HOOTLINE_SIMULATED_MAIN_BRANCH ?? "main",
   pollIntervalMs: readEnvInteger("HOOTLINE_SIMULATED_POLL_INTERVAL_MS", 2_000),
   repairTimeoutMs: readEnvInteger("HOOTLINE_SIMULATED_REPAIR_TIMEOUT_MS", 20 * 60 * 1000),
   repo:
     process.env.HOOTLINE_SIMULATED_REPO ??
     "openhoo/hootline-simulated-pipeline-fixture",
+  projects: process.env.HOOTLINE_SIMULATED_PROJECTS ?? "all",
   samples: readEnvInteger("HOOTLINE_SIMULATED_SAMPLES", 1),
   scenarios: process.env.HOOTLINE_SIMULATED_SCENARIOS ?? "all",
   serverUrl: process.env.HOOTLINE_SIMULATED_SERVER_URL,
@@ -77,17 +79,20 @@ if (import.meta.url === pathToFileURL(process.argv[1]).href) {
 
 export async function main(options) {
   const sourceRoot = process.cwd();
-  const scenarios = resolveScenarios(options.scenarios);
+  const projects = resolveProjects(options.projects);
+  const scenarios = resolveScenarios(options.scenarios, { projects: options.projects });
   const startedAt = new Date();
   const runId = `${startedAt.toISOString().replace(/[:.]/g, "-")}-${randomUUID().slice(0, 8)}`;
   const artifactDir = resolve(sourceRoot, "var", "simulated-benchmarks", runId);
   const statePath = resolve(artifactDir, "hootline-state.json");
   const simulatorStatePath = resolve(artifactDir, "simulator-state.json");
-  const fixtureTemplatePath = resolve(sourceRoot, options.fixtureTemplatePath);
 
   console.log(`Simulated benchmark: ${runId}`);
   console.log(`Simulated repo: ${options.repo}`);
-  console.log(`Fixture template: ${fixtureTemplatePath}`);
+  console.log(`Projects: ${projects.map((project) => project.id).join(", ")}`);
+  if (options.fixtureTemplatePath !== undefined) {
+    console.log(`Fixture template override: ${resolve(sourceRoot, options.fixtureTemplatePath)}`);
+  }
   console.log(`State path: ${statePath}`);
   console.log(`Simulator state path: ${simulatorStatePath}`);
   console.log(`Scenarios: ${scenarios.map((scenario) => scenario.id).join(", ")}`);
@@ -96,8 +101,11 @@ export async function main(options) {
   if (options.dryRun) console.log("Mode: dry run");
   if (options.mockModel) console.log("Model mode: deterministic mock");
 
-  if (!existsSync(fixtureTemplatePath)) {
-    throw new Error(`Fixture template path does not exist: ${fixtureTemplatePath}`);
+  for (const scenario of scenarios) {
+    const fixtureTemplatePath = resolve(sourceRoot, options.fixtureTemplatePath ?? scenario.templatePath);
+    if (!existsSync(fixtureTemplatePath)) {
+      throw new Error(`Fixture template path does not exist for ${scenario.id}: ${fixtureTemplatePath}`);
+    }
   }
   mkdirSync(artifactDir, { recursive: true });
   writeSimulatorState(simulatorStatePath, {
@@ -133,7 +141,6 @@ export async function main(options) {
     await runWithConcurrency(jobs, options.concurrency, async ({ sample, scenario }, index) => {
       const row = await runScenarioSample({
         artifactDir,
-        fixtureTemplatePath,
         options,
         runId,
         sample,
@@ -156,7 +163,6 @@ export async function main(options) {
 
 async function runScenarioSample({
   artifactDir,
-  fixtureTemplatePath,
   options,
   runId,
   sample,
@@ -167,25 +173,27 @@ async function runScenarioSample({
 }) {
   const sampleStartedAt = new Date().toISOString();
   console.log("");
-  console.log(`== ${scenario.id} sample ${sample}/${options.samples} ==`);
+  console.log(`== ${scenario.projectId}/${scenario.id} sample ${sample}/${options.samples} ==`);
 
   const sampleDir = resolve(artifactDir, "samples", `${scenario.id}-${sample}`);
   const repoPath = resolve(sampleDir, "repo");
+  const fixtureTemplatePath = resolve(process.cwd(), options.fixtureTemplatePath ?? scenario.templatePath);
   materializeFixtureTemplate(fixtureTemplatePath, repoPath);
   assertScenarioBaseline(repoPath, scenario);
+  const policy = loadFixturePolicy(repoPath, scenario);
 
   if (options.dryRun) {
-    return dryRunRow({ sample, sampleStartedAt, scenario });
+    return dryRunRow({ policy, sample, sampleStartedAt, scenario });
   }
 
-  const baseline = runFixtureCommand(repoPath);
+  const baseline = runFixtureCommand(repoPath, policy.verificationCommands);
   if (baseline.status !== 0) {
     writeCommandArtifact(sampleDir, "baseline", baseline);
     throw new Error(`Baseline verification failed for ${scenario.id}.`);
   }
 
   applyScenarioMutation(repoPath, scenario);
-  const failure = runFixtureCommand(repoPath);
+  const failure = runFixtureCommand(repoPath, policy.verificationCommands);
   writeCommandArtifact(sampleDir, "failure", failure);
   if (failure.status === 0) {
     throw new Error(`Scenario ${scenario.id} did not produce a failing fixture test.`);
@@ -201,8 +209,9 @@ async function runScenarioSample({
     worktreePath: repoPath,
     policyPath: ".hootline.yaml",
     scenarioId: scenario.id,
+    projectId: scenario.projectId,
     failureContext: {
-      summary: `Simulated GitHub workflow failed for ${scenario.title}. Expected repair files: ${scenarioExpectedRepairFiles(scenario).join(", ")}.`,
+      summary: `Simulated GitHub workflow failed for ${scenario.projectName}: ${scenario.title}. Expected repair files: ${scenarioExpectedRepairFiles(scenario).join(", ")}.`,
       jobs: [
         {
           id: String(pipelineId),
@@ -259,6 +268,7 @@ async function runScenarioSample({
       workflowRun,
     }),
     simulated: true,
+    verificationCommands: policy.verificationCommands,
     actualRepairFiles: simulatedPullRequest?.changes.map((change) => change.path) ?? [],
     expectedRepairFilesMatch: sameStringSet(
       simulatedPullRequest?.changes.map((change) => change.path) ?? [],
@@ -270,8 +280,10 @@ async function runScenarioSample({
   return row;
 }
 
-function dryRunRow({ sample, sampleStartedAt, scenario }) {
+function dryRunRow({ policy, sample, sampleStartedAt, scenario }) {
   return {
+    projectId: scenario.projectId,
+    projectName: scenario.projectName,
     scenarioId: scenario.id,
     scenarioTitle: scenario.title,
     scenarioComplexity: scenario.complexity,
@@ -286,6 +298,7 @@ function dryRunRow({ sample, sampleStartedAt, scenario }) {
     expectedFailure: scenario.expectedFailure,
     simulated: true,
     scenarioSourcePaths: scenarioSourcePaths(scenario),
+    verificationCommands: policy.verificationCommands,
   };
 }
 
@@ -490,18 +503,42 @@ function materializeFixtureTemplate(templatePath, repoPath) {
   });
 }
 
-function runFixtureCommand(repoPath) {
-  const result = spawnSync("npm", ["test"], {
-    cwd: repoPath,
-    encoding: "utf8",
-    maxBuffer: 1024 * 1024,
-    stdio: "pipe",
-  });
+function loadFixturePolicy(repoPath, scenario) {
+  const policyPath = resolve(repoPath, ".hootline.yaml");
+  const fallback = scenario.verificationCommands ?? ["npm test"];
+  if (!existsSync(policyPath)) return { verificationCommands: fallback };
+  const parsed = YAML.parse(readFileSync(policyPath, "utf8"));
+  const commands = Array.isArray(parsed?.verificationCommands)
+    ? parsed.verificationCommands.filter((command) => typeof command === "string" && command.trim() !== "")
+    : [];
   return {
-    command: "npm test",
-    status: result.status ?? 1,
-    stdout: result.stdout ?? "",
-    stderr: result.stderr ?? "",
+    verificationCommands: commands.length > 0 ? commands : fallback,
+  };
+}
+
+function runFixtureCommand(repoPath, verificationCommands) {
+  const outputs = [];
+  for (const command of verificationCommands) {
+    const result = spawnSync("bash", ["-lc", `set -euo pipefail; ${command}`], {
+      cwd: repoPath,
+      encoding: "utf8",
+      maxBuffer: 1024 * 1024,
+      stdio: "pipe",
+    });
+    outputs.push({
+      command,
+      status: result.status ?? 1,
+      stdout: result.stdout ?? "",
+      stderr: result.stderr ?? "",
+    });
+    if ((result.status ?? 1) !== 0) break;
+  }
+  return {
+    command: verificationCommands.join(" && "),
+    commands: outputs,
+    status: outputs.every((output) => output.status === 0) ? 0 : 1,
+    stdout: outputs.map((output) => output.stdout).join("\n"),
+    stderr: outputs.map((output) => output.stderr).join("\n"),
   };
 }
 
@@ -633,6 +670,7 @@ function writeArtifacts({ artifactDir, options, rows, scenarios, startedAt }) {
     startedAt: startedAt.toISOString(),
     completedAt: new Date().toISOString(),
     repo: options.repo,
+    projects: [...new Set(scenarios.map((scenario) => scenario.projectId))],
     scenarios: scenarios.map((scenario) => scenario.id),
     samples: options.samples,
     concurrency: options.concurrency,
@@ -667,11 +705,23 @@ function renderMarkdownSummary(report) {
     `Average continuations: ${report.summary.averageContinuations.toFixed(2)}`,
     `Average provider-error retries: ${report.summary.averageProviderErrorRetries.toFixed(2)}`,
     "",
+    "## By Project",
+    "",
+    "| Project | Samples | Published green | Rate | Status counts |",
+    "| --- | ---: | ---: | ---: | --- |",
+  ];
+  for (const [project, group] of Object.entries(report.summary.byProject)) {
+    lines.push(
+      `| ${project} | ${group.total} | ${group.publishedGreen} | ${(group.publishedGreenRate * 100).toFixed(1)}% | ${formatCounts(group.counts)} |`,
+    );
+  }
+  lines.push(
+    "",
     "## By Complexity",
     "",
     "| Complexity | Samples | Published green | Rate | Status counts |",
     "| --- | ---: | ---: | ---: | --- |",
-  ];
+  );
   for (const [complexity, group] of Object.entries(report.summary.byComplexity)) {
     lines.push(
       `| ${complexity} | ${group.total} | ${group.publishedGreen} | ${(group.publishedGreenRate * 100).toFixed(1)}% | ${formatCounts(group.counts)} |`,
@@ -708,11 +758,11 @@ function renderMarkdownSummary(report) {
   lines.push("", "## Areas To Improve", "");
   for (const signal of report.improvementSignals) lines.push(`- ${signal}`);
   lines.push("", "## Samples", "");
-  lines.push("| Scenario | Complexity | Sample | Status | Provider Retries | Expected files | Actual files | Checks |");
-  lines.push("| --- | --- | ---: | --- | ---: | --- | --- | --- |");
+  lines.push("| Project | Scenario | Complexity | Sample | Status | Provider Retries | Expected files | Actual files | Checks |");
+  lines.push("| --- | --- | --- | ---: | --- | ---: | --- | --- | --- |");
   for (const row of report.rows) {
     lines.push(
-      `| ${row.scenarioId} | ${row.scenarioComplexity ?? ""} | ${row.sample} | ${row.status} | ${row.providerErrorRetriesUsed ?? 0} | ${(row.expectedRepairFiles ?? []).join(", ")} | ${(row.actualRepairFiles ?? []).join(", ")} | ${row.simulatedCheckConclusion ?? row.prCheckConclusion ?? ""} |`,
+      `| ${row.projectId ?? ""} | ${row.scenarioId} | ${row.scenarioComplexity ?? ""} | ${row.sample} | ${row.status} | ${row.providerErrorRetriesUsed ?? 0} | ${(row.expectedRepairFiles ?? []).join(", ")} | ${(row.actualRepairFiles ?? []).join(", ")} | ${row.simulatedCheckConclusion ?? row.prCheckConclusion ?? ""} |`,
     );
   }
   lines.push("");
@@ -729,6 +779,11 @@ function printSummary(rows, artifactDir, dryRun) {
   console.log(`- average provider-error retries: ${summary.averageProviderErrorRetries.toFixed(2)}`);
   for (const [status, count] of Object.entries(summary.counts)) {
     console.log(`- ${status}: ${count}`);
+  }
+  for (const [project, group] of Object.entries(summary.byProject)) {
+    console.log(
+      `- project ${project}: ${group.publishedGreen}/${group.total} published green (${(group.publishedGreenRate * 100).toFixed(1)}%)`,
+    );
   }
   for (const [complexity, group] of Object.entries(summary.byComplexity)) {
     console.log(
@@ -850,6 +905,9 @@ function parseArgs(argv) {
       case "--repo":
         parsed.repo = value;
         break;
+      case "--projects":
+        parsed.projects = value;
+        break;
       case "--samples":
         parsed.samples = readPositiveInteger(value, name);
         break;
@@ -881,13 +939,17 @@ Options:
   --scenarios <ids|all>           Comma-separated scenario ids (default: ${DEFAULTS.scenarios})
   --samples <n>                   Samples per scenario (default: ${DEFAULTS.samples})
   --concurrency <n>               Scenario samples to run concurrently (default: ${DEFAULTS.concurrency})
+  --projects <ids|all>            Comma-separated fixture project ids (default: ${DEFAULTS.projects})
   --repo <owner/name>             Simulated repository slug (default: ${DEFAULTS.repo})
   --server-url <url>              Use an already-running Hootline server
-  --fixture-template-path <path>  Fixture template path (default: ${DEFAULTS.fixtureTemplatePath})
+  --fixture-template-path <path>  Override fixture template path for single-template debugging
   --repair-timeout-ms <ms>        Repair timeout per sample (default: ${DEFAULTS.repairTimeoutMs})
   --poll-interval-ms <ms>         State polling interval (default: ${DEFAULTS.pollIntervalMs})
   --webhook-secret <secret>       Synthetic GitHub webhook secret
   --help                          Show this help
+
+Available projects:
+  ${projectIds().join(", ")}
 
 Available scenarios:
   ${scenarioIds().join(", ")}

@@ -26,6 +26,8 @@ const {
   scenarioExpectedRepairFiles,
   scenarioMutations,
   scenarioSourcePaths,
+  projectIds,
+  resolveProjects,
   resolveScenario,
   resolveScenarios,
 } = scenarioModule;
@@ -75,6 +77,11 @@ test("fixture scenarios replace exactly one passing source region", () => {
 
 test("fixture scenario selection supports all and rejects unknown ids", () => {
   assert.equal(resolveScenario("shipping-threshold-basis").sourcePath, "src/shipping.js");
+  assert.deepEqual(projectIds(), ["commerce-platform", "support-desk"]);
+  assert.deepEqual(
+    resolveProjects("support-desk").map((project: { id: string }) => project.id),
+    ["support-desk"],
+  );
   assert.equal(resolveScenarios("all").length, SCENARIOS.length);
   assert.equal(SCENARIOS.length, 23);
   assert.deepEqual(
@@ -83,13 +90,19 @@ test("fixture scenario selection supports all and rejects unknown ids", () => {
     ),
     ["shipping-threshold-basis", "percentage-rounding"],
   );
+  assert.deepEqual(
+    resolveScenarios("all", { projects: "support-desk" }).map((scenario: { projectId: string }) => scenario.projectId),
+    Array(11).fill("support-desk"),
+  );
   assert.throws(() => resolveScenario("missing"), /Unknown fixture scenario/);
+  assert.throws(() => resolveProjects("missing"), /Unknown fixture project/);
 });
 
 test("complex fixture scenarios expose all mutated and expected repair files", () => {
   const scenario = resolveScenario("checkout-money-shipping-tax-cascade");
-  const advanced = resolveScenario("full-checkout-edge-cascade");
+  const support = resolveScenario("support-triage-cascade");
 
+  assert.equal(scenario.projectId, "commerce-platform");
   assert.equal(scenario.complexity, "complex");
   assert.deepEqual(scenarioSourcePaths(scenario), ["src/money.js", "src/shipping.js", "src/tax.js"]);
   assert.deepEqual(scenarioExpectedRepairFiles(scenario), [
@@ -97,22 +110,11 @@ test("complex fixture scenarios expose all mutated and expected repair files", (
     "src/shipping.js",
     "src/tax.js",
   ]);
-  assert.equal(advanced.complexity, "advanced");
-  assert.equal(scenarioMutations(advanced).length, 5);
-  assert.deepEqual(scenarioSourcePaths(advanced), [
-    "src/orders.js",
-    "src/promotions.js",
-    "src/shipping.js",
-    "src/tax.js",
-    "src/money.js",
-  ]);
-  assert.deepEqual(scenarioExpectedRepairFiles(advanced), [
-    "src/orders.js",
-    "src/promotions.js",
-    "src/shipping.js",
-    "src/tax.js",
-    "src/money.js",
-  ]);
+  assert.equal(support.projectId, "support-desk");
+  assert.equal(support.complexity, "complex");
+  assert.equal(scenarioMutations(support).length, 3);
+  assert.deepEqual(scenarioSourcePaths(support), ["src/tickets.js", "src/routing.js", "src/sla.js"]);
+  assert.deepEqual(scenarioExpectedRepairFiles(support), ["src/tickets.js", "src/routing.js", "src/sla.js"]);
 });
 
 test("simulated benchmark dry-run does not require a server or provider credentials", () => {
@@ -123,6 +125,8 @@ test("simulated benchmark dry-run does not require a server or provider credenti
     [
       scriptPath,
       "--dry-run",
+      "--projects",
+      "commerce-platform",
       "--scenarios",
       "checkout-money-shipping-tax-cascade",
       "--concurrency",
@@ -135,6 +139,7 @@ test("simulated benchmark dry-run does not require a server or provider credenti
 
   assert.match(output, /Mode: dry run/);
   assert.match(output, /Concurrency: 2/);
+  assert.match(output, /Projects: commerce-platform/);
   assert.match(output, /checkout-money-shipping-tax-cascade/);
   assert.match(output, /dry_run: 1/);
 });
@@ -201,13 +206,14 @@ test("simulated benchmark loads repo env files without overriding caller env", (
 });
 
 test("tracked simulated fixture is green before each scenario mutation and red after it", () => {
-  const templatePath = fileURLToPath(new URL("../benchmarks/fixtures/pipeline-repo", import.meta.url));
+  const repoRoot = fileURLToPath(new URL("..", import.meta.url));
   const tempRoot = mkdtempSync(join(tmpdir(), "hootline-simulated-fixture-"));
   const childEnv = { ...process.env };
   delete childEnv.NODE_TEST_CONTEXT;
   try {
     for (const scenario of SCENARIOS) {
       const repoPath = join(tempRoot, scenario.id);
+      const templatePath = join(repoRoot, scenario.templatePath);
       cpSync(templatePath, repoPath, { recursive: true });
       assertScenarioBaseline(repoPath, scenario);
       assert.equal(spawnSync("npm", ["test"], { cwd: repoPath, env: childEnv, stdio: "pipe" }).status, 0);
@@ -298,6 +304,8 @@ test("benchmark rows retain complex scenario metadata", () => {
   });
 
   assert.equal(row.scenarioComplexity, "complex");
+  assert.equal(row.projectId, "commerce-platform");
+  assert.equal(row.projectName, "Commerce Platform");
   assert.equal(row.scenarioMutationCount, 3);
   assert.deepEqual(row.expectedRepairFiles, ["src/money.js", "src/shipping.js", "src/tax.js"]);
 });
@@ -334,6 +342,7 @@ test("benchmark summarizer finds latest attempt for a sha", () => {
       attemptCount: 2,
       continuationsUsed: 1,
       providerErrorRetriesUsed: 1,
+      projectId: "commerce-platform",
       scenarioComplexity: "complex",
       scenarioTags: ["shipping", "tax"],
       scenarioMutationCount: 3,
@@ -350,6 +359,12 @@ test("benchmark summarizer finds latest attempt for a sha", () => {
   assert.equal(summary.averageProviderErrorRetries, 1);
   assert.deepEqual(summary.failureKinds, {});
   assert.deepEqual(summary.byComplexity.complex, {
+    total: 1,
+    publishedGreen: 1,
+    counts: { published_green: 1 },
+    publishedGreenRate: 1,
+  });
+  assert.deepEqual(summary.byProject["commerce-platform"], {
     total: 1,
     publishedGreen: 1,
     counts: { published_green: 1 },

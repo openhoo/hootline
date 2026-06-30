@@ -1,15 +1,22 @@
-import { buildCartLines, sumLineSubtotals, taxableSubtotal } from "./catalog.js";
+import { buildCartLines, physicalWeightOunces, sumLineSubtotals, taxableSubtotal } from "./catalog.js";
+import { reserveInventory } from "./inventory.js";
+import { applyStoreCredit, authorizePayment } from "./payments.js";
 import { calculateDiscountCents } from "./promotions.js";
 import { quoteShipping } from "./shipping.js";
 import { calculateTaxCents } from "./tax.js";
 
 export function quoteOrder({
+  customerId = "guest",
+  destinationState = "OR",
+  idempotencyKey,
   items,
   promotionCode,
-  destinationState = "OR",
   shippingServiceLevel = "standard",
+  storeCreditCents = 0,
+  warehouseRegion = "west",
 }) {
   const lines = buildCartLines(items);
+  const inventoryReservations = reserveInventory(lines, warehouseRegion);
   const merchandiseSubtotalCents = sumLineSubtotals(lines);
   const discountCents = calculateDiscountCents(merchandiseSubtotalCents, promotionCode);
   const discountedSubtotalCents = merchandiseSubtotalCents - discountCents;
@@ -19,12 +26,25 @@ export function quoteOrder({
     discountedSubtotalCents,
     requiresShipping: !allDigital,
     serviceLevel: shippingServiceLevel,
+    weightOunces: physicalWeightOunces(lines),
   });
   const taxCents = calculateTaxCents(taxableSubtotal(lines), destinationState);
-  const totalCents = discountedSubtotalCents + shipping.costCents + taxCents;
+  const totalBeforeCreditCents = discountedSubtotalCents + shipping.costCents + taxCents;
+  const payment = applyStoreCredit(totalBeforeCreditCents, storeCreditCents);
+  const authorization = authorizePayment({
+    amountDueCents: payment.amountDueCents,
+    customerId,
+    idempotencyKey,
+  });
 
   return {
+    customerId,
+    inventoryReservations,
     lines,
+    payment: {
+      ...payment,
+      authorization,
+    },
     shipping,
     totals: {
       merchandiseSubtotalCents,
@@ -32,7 +52,8 @@ export function quoteOrder({
       discountedSubtotalCents,
       taxCents,
       shippingCents: shipping.costCents,
-      totalCents,
+      totalBeforeCreditCents,
+      totalCents: payment.amountDueCents,
     },
   };
 }

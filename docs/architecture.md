@@ -26,10 +26,11 @@ operator tooling, benchmark infrastructure, tests, or documentation.
 
 ## Benchmarks
 
-- `benchmarks/fixtures/pipeline-repo/`: local commerce fixture used by the
-  simulated provider benchmark.
+- `benchmarks/fixtures/projects/`: realistic first-party fixture applications
+  used by the simulated provider benchmark. Each project has its own policy,
+  source tree, tests, and verification command.
 - `scripts/fixture-scenarios.mjs`: scenario catalog and mutation helpers for
-  simulated benchmark scenarios.
+  simulated benchmark scenarios, including project metadata and template paths.
 - `scripts/simulated-benchmark.mjs`: primary benchmark CLI. It runs Hootline
   against an isolated local Eve app workspace and the simulated GitHub provider.
 - `scripts/benchmarks/common.mjs`: shared benchmark row, status, summary, and

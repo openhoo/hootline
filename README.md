@@ -325,10 +325,11 @@ subscribes to `workflow_run` and `check_suite` events.
 `benchmark:sim` is the primary benchmark path for agent and harness changes. It
 runs the full Eve repair loop against a simulated GitHub provider, so it does
 not reset a real repository, call `gh`, wait on GitHub Actions, or require a
-public webhook tunnel. The runner materializes a local benchmark repo from
-`benchmarks/fixtures/pipeline-repo`, injects the selected scenario, sends a
-signed synthetic `workflow_run` webhook to Hootline, and records the simulated
-PR/check result under `var/simulated-benchmarks/`.
+public webhook tunnel. The runner materializes a local benchmark repo from one
+of the realistic project fixtures under `benchmarks/fixtures/projects/`,
+injects the selected scenario, sends a signed synthetic `workflow_run` webhook
+to Hootline, and records the simulated PR/check result under
+`var/simulated-benchmarks/`.
 
 Preview the selected scenarios without starting Hootline:
 
@@ -342,6 +343,12 @@ Run one deterministic smoke sample with Eve's mock model:
 npm run benchmark:sim -- --mock-model --scenarios shipping-threshold-basis --samples 1
 ```
 
+Run only one fixture project:
+
+```sh
+npm run benchmark:sim:dry-run -- --projects support-desk
+```
+
 Run the same simulated harness with the configured real model:
 
 ```sh
@@ -353,6 +360,12 @@ Run multiple simulated scenario samples concurrently:
 ```sh
 npm run benchmark:sim -- --mock-model --scenarios all --samples 1 --concurrency 4
 ```
+
+The benchmark projects are intentionally larger than the individual scenario
+mutations. The default suite currently includes `commerce-platform` and
+`support-desk`, each with its own `package.json`, `.hootline.yaml`, `src/`, and
+`test/` tree. This makes the repair loop navigate realistic project directories
+even when a scenario changes only one business rule.
 
 The runner starts a built local Eve server automatically unless `--server-url`
 is supplied. For auto-started servers it sets
@@ -370,14 +383,14 @@ The benchmark waits for Hootline to publish or terminate the repair attempt,
 waits for simulated fixer PR checks when a PR is opened, and records attempt
 count, tool sequence, failed tools, continuation count, token usage, terminal
 action, PR URL, PR check result, scenario complexity, scenario tags, mutation
-count, the expected repair file set, summary breakdowns by complexity, tag, and
-mutation count, and non-green improvement signals.
+count, project id, verification commands, the expected repair file set, summary
+breakdowns by project, complexity, tag, and mutation count, and non-green
+improvement signals.
 
-Scenario ids are listed by `npm run benchmark:sim -- --help`. The catalog
-includes single-module regressions for shipping, promotions, tax, catalog,
-money, receipt, defaults, fallbacks, boundaries, and formatting behavior, plus
-multi-file cascade scenarios that force the repair agent to reconcile several
-failing business rules before publishing.
+Scenario ids are listed by `npm run benchmark:sim -- --help`. The current
+scenario catalog is kept stable for benchmark comparability while the fixed
+project itself carries broader source and test context around each injected
+regression.
 
 ### Cloudflare Quick Tunnel
 

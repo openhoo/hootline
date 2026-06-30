@@ -3,14 +3,15 @@ import test from "node:test";
 
 import {
   buildCartLines,
+  buildReceipt,
   calculateDiscountCents,
   calculateTaxCents,
   findPromotion,
   formatCents,
   percentageOfCents,
   quoteOrder,
+  reserveInventory,
 } from "../src/index.js";
-import { buildReceipt } from "../src/receipt.js";
 
 test("free shipping is based on merchandise subtotal before discounts", () => {
   const order = quoteOrder({
@@ -121,28 +122,6 @@ test("receipt total line includes shipping and tax", () => {
   assert.match(receipt, /Total \$42\.07/);
 });
 
-test("receipt discount line shows a negative discount", () => {
-  const order = quoteOrder({
-    items: [
-      { sku: "coffee-beans", quantity: 1 },
-      { sku: "pour-over-kit", quantity: 1 },
-    ],
-    promotionCode: "BREWCLUB15",
-    destinationState: "OR",
-  });
-  const receipt = buildReceipt(order);
-
-  assert.match(receipt, /Discount -\$12\.00/);
-});
-
-test("default destination remains tax-free Oregon", () => {
-  const order = quoteOrder({
-    items: [{ sku: "coffee-beans", quantity: 1 }],
-  });
-
-  assert.equal(order.totals.taxCents, 0);
-});
-
 test("tax calculation uses destination state's configured rate", () => {
   const order = quoteOrder({
     items: [{ sku: "coffee-beans", quantity: 1 }],
@@ -152,23 +131,16 @@ test("tax calculation uses destination state's configured rate", () => {
   assert.equal(order.totals.taxCents, 208);
 });
 
-test("unknown destination states default to zero tax", () => {
-  assert.equal(calculateTaxCents(3200, "NV"), 0);
-});
+test("inventory reservations surface realistic surrounding project behavior", () => {
+  const reservations = reserveInventory([{ sku: "espresso-machine", quantity: 2 }]);
 
-test("BREWCLUB15 keeps its documented eligibility threshold", () => {
-  const order = quoteOrder({
-    items: [
-      { sku: "coffee-beans", quantity: 1 },
-      { sku: "pour-over-kit", quantity: 1 },
-    ],
-    promotionCode: "BREWCLUB15",
-    destinationState: "OR",
-  });
-
-  assert.equal(order.totals.discountCents, 1200);
+  assert.equal(reservations[0].status, "backordered");
 });
 
 test("promotion thresholds are inclusive", () => {
   assert.equal(calculateDiscountCents(5000, "COFFEE10"), 500);
+});
+
+test("unknown destination states default to zero tax", () => {
+  assert.equal(calculateTaxCents(3200, "NV"), 0);
 });

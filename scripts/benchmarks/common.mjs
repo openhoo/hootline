@@ -7,6 +7,8 @@ export function buildBenchmarkRow({ inspector, prChecks, repairResult, sample, s
   const attempt = repairResult.attempt;
   const publish = attempt?.lastPublishResult;
   return {
+    projectId: scenario.projectId,
+    projectName: scenario.projectName,
     scenarioId: scenario.id,
     scenarioTitle: scenario.title,
     scenarioComplexity: scenario.complexity,
@@ -89,6 +91,7 @@ export function shouldRedeliverRepairAttempt(attempt) {
 
 export function summarizeRows(rows) {
   const counts = {};
+  const byProject = {};
   const byComplexity = {};
   const byTag = {};
   const byMutationCount = {};
@@ -96,6 +99,7 @@ export function summarizeRows(rows) {
   const failedTools = {};
   for (const row of rows) {
     counts[row.status] = (counts[row.status] ?? 0) + 1;
+    recordSummaryGroup(byProject, row.projectId ?? "unknown", row);
     recordSummaryGroup(byComplexity, row.scenarioComplexity ?? "unknown", row);
     for (const tag of row.scenarioTags ?? []) {
       recordSummaryGroup(byTag, tag, row);
@@ -108,6 +112,7 @@ export function summarizeRows(rows) {
       failedTools[tool] = (failedTools[tool] ?? 0) + 1;
     }
   }
+  finalizeSummaryGroups(byProject);
   finalizeSummaryGroups(byComplexity);
   finalizeSummaryGroups(byTag);
   finalizeSummaryGroups(byMutationCount);
@@ -129,6 +134,7 @@ export function summarizeRows(rows) {
       rows.length === 0
         ? 0
         : rows.reduce((total, row) => total + (row.providerErrorRetriesUsed ?? 0), 0) / rows.length,
+    byProject,
     byComplexity,
     byTag,
     byMutationCount,
