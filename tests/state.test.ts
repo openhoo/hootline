@@ -400,6 +400,50 @@ test("claimRepairSlot records the first attempt and reports in_progress once sta
   }
 });
 
+test("failed or abandoned repair sessions do not pin a sha as active", () => {
+  const tempRoot = mkdtempSync(join(tmpdir(), "hootline-state-"));
+  const statePath = join(tempRoot, "state.json");
+  try {
+    const event = makeEvent();
+    const key = eventAttemptKey(event);
+    recordAttempt(statePath, event, makePolicy());
+    updateAttempt(statePath, key, {
+      lastSessionId: "session-failed",
+      repoStagedAt: event.receivedAt,
+      lastSessionStatus: "failed",
+      lastSessionFailureKind: "provider_error",
+      lastSessionFailure: "provider failed",
+    });
+
+    assert.equal(
+      findActiveRepairAttemptForSha(statePath, {
+        provider: "github",
+        repoSlug: "owner/repo",
+        sha: "abc123def456",
+        now: new Date(event.receivedAt),
+      }),
+      undefined,
+    );
+
+    updateAttempt(statePath, key, {
+      lastSessionStatus: "abandoned",
+      lastSessionFailureKind: "no_terminal_action",
+      lastSessionFailure: "stopped without terminal action",
+    });
+    assert.equal(
+      findActiveRepairAttemptForSha(statePath, {
+        provider: "github",
+        repoSlug: "owner/repo",
+        sha: "abc123def456",
+        now: new Date(event.receivedAt),
+      }),
+      undefined,
+    );
+  } finally {
+    rmSync(tempRoot, { recursive: true, force: true });
+  }
+});
+
 test("claimRepairSlot rejects with max_attempts BEFORE recording past the cap", async () => {
   const tempRoot = mkdtempSync(join(tmpdir(), "hootline-state-"));
   const statePath = join(tempRoot, "state.json");

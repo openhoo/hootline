@@ -2,6 +2,7 @@ import { defineTool } from "eve/tools";
 
 import { resolveCurrentAttempt } from "../lib/current.ts";
 import { createLogger, logError } from "../lib/logger.ts";
+import { failureContextModelOutput } from "../lib/model-output.ts";
 import { getProviderClient } from "../lib/providers/index.ts";
 import { updateAttempt } from "../lib/state.ts";
 import { optionalAttemptKeySchema, readOptionalString } from "../lib/tool-input.ts";
@@ -25,5 +26,8 @@ export default defineTool({
       logError(tlog, "get_failure_context failed", error);
       throw error;
     }
+  },
+  toModelOutput(output) {
+    return failureContextModelOutput(output);
   },
 });

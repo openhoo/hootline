@@ -2,6 +2,7 @@ import { defineTool } from "eve/tools";
 
 import { resolveStagedAttempt } from "../lib/current.ts";
 import { createLogger, logError } from "../lib/logger.ts";
+import { verificationModelOutput } from "../lib/model-output.ts";
 import { runVerificationCommandsWithPolicy } from "../lib/sandbox.ts";
 import { updateAttempt } from "../lib/state.ts";
 import { optionalAttemptKeySchema } from "../lib/tool-input.ts";
@@ -25,5 +26,8 @@ export default defineTool({
       logError(tlog, "run_repo_checks failed", error);
       throw error;
     }
+  },
+  toModelOutput(output) {
+    return verificationModelOutput(output);
   },
 });

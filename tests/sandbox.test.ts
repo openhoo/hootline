@@ -4,6 +4,7 @@ import test from "node:test";
 import {
   assertSandboxSnapshotReady,
   collectSandboxChanges,
+  replaceSandboxText,
   runVerificationCommands,
   runVerificationCommandsWithPolicy,
   validateChangesAgainstPolicy,
@@ -93,6 +94,58 @@ test("rejects a changed path outside allowedFileGlobs as not allowed by policy",
   await assert.rejects(
     collectSandboxChanges(sandbox, makePolicy()),
     /Changed path is not allowed by policy: other\/file\.ts/,
+  );
+});
+
+test("replaces exact text in a policy-allowed repository file", async () => {
+  const sandbox = new FakeSandbox();
+  sandbox.textFiles.set("repo/src/app.ts", "export const value = 1;\n");
+
+  const result = await replaceSandboxText(sandbox, makePolicy(), {
+    path: "src/app.ts",
+    expected: "value = 1",
+    replacement: "value = 2",
+  });
+
+  assert.equal(result.path, "src/app.ts");
+  assert.equal(result.replacements, 1);
+  assert.equal(sandbox.textFiles.get("repo/src/app.ts"), "export const value = 2;\n");
+});
+
+test("normalizes documented workspace paths for repository edits", async () => {
+  const sandbox = new FakeSandbox();
+  sandbox.textFiles.set("repo/src/app.ts", "export const value = 1;\n");
+
+  const result = await replaceSandboxText(sandbox, makePolicy(), {
+    path: "/workspace/repo/src/app.ts",
+    expected: "value = 1",
+    replacement: "value = 2",
+  });
+
+  assert.equal(result.path, "src/app.ts");
+  assert.equal(sandbox.textFiles.get("repo/src/app.ts"), "export const value = 2;\n");
+});
+
+test("rejects edit paths outside policy and ambiguous replacements", async () => {
+  const sandbox = new FakeSandbox();
+  sandbox.textFiles.set("repo/src/app.ts", "same\nsame\n");
+
+  await assert.rejects(
+    replaceSandboxText(sandbox, makePolicy(), {
+      path: "README.md",
+      expected: "anything",
+      replacement: "other",
+    }),
+    /Edit path is not allowed by policy: README\.md/,
+  );
+
+  await assert.rejects(
+    replaceSandboxText(sandbox, makePolicy(), {
+      path: "src/app.ts",
+      expected: "same",
+      replacement: "different",
+    }),
+    /expected text must occur exactly once in src\/app\.ts; found 2/,
   );
 });
 

@@ -107,6 +107,16 @@ export interface RerunRequestRecord {
   error?: string | undefined;
 }
 
+export type RepairSessionStatus = "running" | "completed" | "waiting" | "failed" | "abandoned";
+
+export type RepairSessionFailureKind =
+  | "length"
+  | "no_terminal_action"
+  | "human_input_requested"
+  | "provider_error"
+  | "stream_error"
+  | "timeout";
+
 export interface AttemptRecord {
   key: string;
   provider: Provider;
@@ -120,6 +130,13 @@ export interface AttemptRecord {
   lastSeenAt: string;
   dispatchedAt?: string | undefined;
   lastSessionId?: string | undefined;
+  lastSessionStatus?: RepairSessionStatus | undefined;
+  lastSessionFinishReason?: string | undefined;
+  lastSessionFailureKind?: RepairSessionFailureKind | undefined;
+  lastSessionFailure?: string | undefined;
+  lastSessionEndedAt?: string | undefined;
+  lastToolSequence?: string[] | undefined;
+  continuationsUsed?: number | undefined;
   repoStagedAt?: string | undefined;
   repoStagedFiles?: number | undefined;
   repoStagedBytes?: number | undefined;

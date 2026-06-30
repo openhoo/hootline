@@ -52,6 +52,13 @@ export type AttemptPatch = Partial<
     AttemptRecord,
     | "dispatchedAt"
     | "lastSessionId"
+    | "lastSessionStatus"
+    | "lastSessionFinishReason"
+    | "lastSessionFailureKind"
+    | "lastSessionFailure"
+    | "lastSessionEndedAt"
+    | "lastToolSequence"
+    | "continuationsUsed"
     | "repoStagedAt"
     | "repoStagedFiles"
     | "repoStagedBytes"
@@ -152,6 +159,22 @@ const attemptRecordSchema = z
     lastSeenAt: z.string(),
     dispatchedAt: z.string().optional(),
     lastSessionId: z.string().optional(),
+    lastSessionStatus: z.enum(["running", "completed", "waiting", "failed", "abandoned"]).optional(),
+    lastSessionFinishReason: z.string().optional(),
+    lastSessionFailureKind: z
+      .enum([
+        "length",
+        "no_terminal_action",
+        "human_input_requested",
+        "provider_error",
+        "stream_error",
+        "timeout",
+      ])
+      .optional(),
+    lastSessionFailure: z.string().optional(),
+    lastSessionEndedAt: z.string().optional(),
+    lastToolSequence: z.array(z.string()).optional(),
+    continuationsUsed: z.number().int().nonnegative().optional(),
     repoStagedAt: z.string().optional(),
     repoStagedFiles: z.number().int().nonnegative().optional(),
     repoStagedBytes: z.number().int().nonnegative().optional(),
@@ -455,6 +478,9 @@ function isActiveRepairAttempt(attempt: AttemptRecord, nowMs: number, recentWind
     attempt.pendingAutoMerge === true
   ) {
     return true;
+  }
+  if (attempt.lastSessionStatus === "failed" || attempt.lastSessionStatus === "abandoned") {
+    return false;
   }
   const lastSeenMs = Date.parse(attempt.lastSeenAt);
   const isRecent = Number.isFinite(lastSeenMs) && nowMs - lastSeenMs <= recentWindowMs;

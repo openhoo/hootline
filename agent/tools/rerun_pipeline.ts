@@ -37,4 +37,7 @@ export default defineTool({
       throw error;
     }
   },
+  toModelOutput(output) {
+    return { type: "json", value: output };
+  },
 });

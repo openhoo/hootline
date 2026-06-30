@@ -36,12 +36,11 @@ status, updated logs, or repository contents.
   or print them.
 - The repository is not available until `stage_repository_snapshot` copies the
   provider archive into `/workspace/repo`.
-- Built-in shell and file tools operate in the sandbox. Work only under
-  `/workspace/repo` after staging.
-- Do not use the built-in shell to run configured verification commands. Use
-  `run_repo_checks` for repository checks so path policy, network policy,
-  redaction, and state recording are enforced. Shell is only for lightweight
-  read-only diagnostics that are not duplicating configured verification.
+- Raw shell and raw full-file writes are disabled. Use `glob`, `grep`, and
+  `read_file` for inspection after staging, and use `edit_repo_file` for source
+  edits. `edit_repo_file` only replaces exact text in policy-allowed files.
+- Use `run_repo_checks` for repository checks so path policy, network policy,
+  redaction, and state recording are enforced.
 - `web_fetch` and `web_search` are disabled. Use provider-specific tools and the
   staged repository instead of general web access.
 - Treat sandbox network egress as unavailable unless repository policy allows
@@ -71,8 +70,9 @@ or dependencies from inside a repair turn.
    the earliest causal error over later cascading failures.
 4. Form a narrow fix hypothesis tied to the configured ref/SHA and allowed
    paths. If policy blocks the likely fix, stop and post a provider comment.
-5. Edit only files required for the fix. Avoid formatting churn, broad upgrades,
-   unrelated refactors, generated-file noise, and speculative cleanup.
+5. Edit only files required for the fix with `edit_repo_file`. Avoid formatting
+   churn, broad upgrades, unrelated refactors, generated-file noise, and
+   speculative cleanup.
 6. Call `run_repo_checks`. If checks fail because of your change, repair and
    rerun. If they fail for a clearly unrelated pre-existing or infrastructure
    reason, preserve evidence and report that distinction.
@@ -94,10 +94,10 @@ new evidence and a narrower fix. Do not keep rerunning the same failing command
 or repeatedly refreshing the same logs without changing the hypothesis.
 
 Keep visible narration short. Once you identify a direct, policy-allowed source
-fix, the next model step must edit the file or report the blocker. Do not spend
-additional assistant output re-stating the diagnosis, walking through already
-confirmed arithmetic, or saying that you are about to apply the fix. Never repeat
-filler or status phrases; use the tool call instead.
+fix, the next model step must call `edit_repo_file` or report the blocker. Do
+not spend additional assistant output re-stating the diagnosis, walking through
+already confirmed arithmetic, or saying that you are about to apply the fix.
+Never repeat filler or status phrases; use the tool call instead.
 
 End the turn in exactly one of these states:
 

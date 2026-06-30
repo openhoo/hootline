@@ -38,10 +38,24 @@ interface VerificationResult {
 type NetworkPolicyStatus = NonNullable<VerificationResult["networkPolicy"]>;
 
 type SandboxChangeSession = Pick<SandboxSession, "run" | "readBinaryFile">;
+type SandboxTextEditSession = Pick<SandboxSession, "readTextFile" | "writeTextFile">;
 type SandboxVerificationSession = Pick<SandboxSession, "run" | "setNetworkPolicy">;
 type SandboxMarkerWriter = Pick<SandboxSession, "id" | "run" | "writeTextFile">;
 type SandboxMarkerReader = Pick<SandboxSession, "id" | "run" | "readTextFile">;
 type SandboxNetworkPolicySession = Pick<SandboxSession, "setNetworkPolicy">;
+
+export interface SandboxTextReplacement {
+  path: string;
+  expected: string;
+  replacement: string;
+}
+
+export interface SandboxTextReplacementResult {
+  path: string;
+  replacements: number;
+  beforeBytes: number;
+  afterBytes: number;
+}
 
 export function validateChangesAgainstPolicy(
   changes: readonly SandboxChange[],
@@ -94,6 +108,47 @@ export async function collectSandboxChanges(
     });
   }
   return changes;
+}
+
+export async function replaceSandboxText(
+  sandbox: SandboxTextEditSession,
+  policy: RepoPolicy,
+  edit: SandboxTextReplacement,
+): Promise<SandboxTextReplacementResult> {
+  const path = normalizeRepoEditPath(edit.path);
+  if (!matchesAnyPattern(path, policy.allowedFileGlobs)) {
+    throw new Error(`Edit path is not allowed by policy: ${path}`);
+  }
+  if (edit.expected.length === 0) {
+    throw new Error("expected text must not be empty.");
+  }
+  if (edit.expected === edit.replacement) {
+    throw new Error("replacement text must differ from expected text.");
+  }
+
+  let current: string | null | undefined;
+  try {
+    current = await sandbox.readTextFile({ path: `repo/${path}` });
+  } catch {
+    current = undefined;
+  }
+  if (typeof current !== "string") {
+    throw new Error(`Repository file does not exist or is not readable as text: ${path}`);
+  }
+
+  const matches = countOccurrences(current, edit.expected);
+  if (matches !== 1) {
+    throw new Error(`expected text must occur exactly once in ${path}; found ${matches}.`);
+  }
+  const next = current.replace(edit.expected, edit.replacement);
+  const beforeBytes = Buffer.byteLength(current, "utf8");
+  const afterBytes = Buffer.byteLength(next, "utf8");
+  if (afterBytes > policy.maxSnapshotBytes) {
+    throw new Error(`Edited file is ${afterBytes} bytes, above policy limit ${policy.maxSnapshotBytes}.`);
+  }
+
+  await sandbox.writeTextFile({ path: `repo/${path}`, content: next });
+  return { path, replacements: 1, beforeBytes, afterBytes };
 }
 
 export async function runVerificationCommands(
@@ -283,6 +338,44 @@ function normalizeRepoPath(path: string): string {
     throw new Error(`Changed path escapes repository policy boundaries: ${JSON.stringify(path)}`);
   }
   return normalized;
+}
+
+function normalizeRepoEditPath(path: string): string {
+  const candidate = stripRepoEditPrefix(path);
+  if (candidate.length === 0 || candidate.startsWith("/") || candidate.includes("\0")) {
+    throw new Error(`Invalid repository edit path: ${JSON.stringify(path)}`);
+  }
+  if (candidate.includes("\\")) {
+    throw new Error(`Repository edit path contains a backslash and is not portable: ${JSON.stringify(path)}`);
+  }
+  const normalized = pathPosix.normalize(candidate);
+  if (
+    normalized === "." ||
+    normalized !== candidate ||
+    normalized.startsWith("../") ||
+    normalized.includes("/../") ||
+    normalized.split("/").includes(".git")
+  ) {
+    throw new Error(`Repository edit path escapes policy boundaries: ${JSON.stringify(path)}`);
+  }
+  return normalized;
+}
+
+function stripRepoEditPrefix(path: string): string {
+  if (path === "/workspace/repo" || path === "repo") return "";
+  if (path.startsWith("/workspace/repo/")) return path.slice("/workspace/repo/".length);
+  if (path.startsWith("repo/")) return path.slice("repo/".length);
+  return path;
+}
+
+function countOccurrences(value: string, needle: string): number {
+  let count = 0;
+  let index = value.indexOf(needle);
+  while (index !== -1) {
+    count += 1;
+    index = value.indexOf(needle, index + needle.length);
+  }
+  return count;
 }
 
 function assertSafeVerificationCommand(command: string): void {

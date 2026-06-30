@@ -5,6 +5,13 @@ import { createLogger, logError, type Logger } from "../lib/logger.ts";
 import { assertEventAllowedByPolicy } from "../lib/policy.ts";
 import { getProviderClient } from "../lib/providers/index.ts";
 import {
+  observeRepairSession,
+  shouldSendRepairContinuation,
+  toLocalContinuationToken,
+  type RepairSessionObservation,
+  type StreamSession,
+} from "../lib/session-monitor.ts";
+import {
   claimAutoMerge,
   claimRepairSlot,
   eventAttemptKey,
@@ -25,6 +32,7 @@ import {
 } from "../lib/webhooks.ts";
 
 const log = createLogger("channels.ci");
+const MAX_REPAIR_CONTINUATIONS = 1;
 
 export default defineChannel({
   routes: [
@@ -155,7 +163,7 @@ async function dispatchPipelineEvent(
   }
 
   const attempt = claim.attempt;
-  const continuationToken = eventAttemptKey(event);
+  const continuationToken = repairContinuationToken(event, attempt.attempts);
   const alog = dlog.child({ attemptKey: attempt.key });
   alog.info({ attempt: attempt.attempts }, "repair slot claimed: dispatching repair session");
   waitUntil(
@@ -192,28 +200,32 @@ async function startRepairSession(input: {
   try {
     const failureContext = await loadFailureContext(input.event, slog);
     updateAttempt(config.statePath, input.attemptKey, { lastFailureContext: failureContext });
+    const auth = buildRepairAuth(input.event, input.attemptKey);
     const session = await input.send(
       {
         message: buildPrompt(input.policy.mode),
         context: buildSeedContext(input.event, input.policy, input.attemptKey, failureContext),
       },
       {
-        auth: {
-          authenticator: input.event.provider,
-          principalId: input.event.actor ?? "pipeline-webhook",
-          principalType: "service",
-          attributes: {
-            provider: input.event.provider,
-            repo: input.event.repoSlug,
-            pipelineId: input.event.pipelineId,
-            attemptKey: input.attemptKey,
-          },
-        },
+        auth,
         continuationToken: input.continuationToken,
       },
     );
-    updateAttempt(config.statePath, input.attemptKey, { lastSessionId: session.id });
+    updateAttempt(config.statePath, input.attemptKey, {
+      lastSessionId: session.id,
+      lastSessionStatus: "running",
+    });
     slog.info({ sessionId: session.id }, "repair session seeded; model turn started");
+    await monitorRepairLoop({
+      auth,
+      config,
+      deliveryKey: input.deliveryKey,
+      initialContinuationToken: input.continuationToken,
+      send: input.send,
+      session,
+      slog,
+      attemptKey: input.attemptKey,
+    });
   } catch (error) {
     // Clear the dispatch marker so the slot is no longer treated as in progress, then
     // release the delivery so a provider redelivery can retry instead of being dropped
@@ -223,6 +235,108 @@ async function startRepairSession(input: {
     await releaseDelivery(config.statePath, input.deliveryKey);
     throw error;
   }
+}
+
+async function monitorRepairLoop(input: {
+  auth: NonNullable<Parameters<SendFn>[1]["auth"]>;
+  config: ReturnType<typeof loadServiceConfig>;
+  deliveryKey: string;
+  initialContinuationToken: string;
+  send: SendFn;
+  session: StreamSession;
+  slog: Logger;
+  attemptKey: string;
+}): Promise<void> {
+  let session = input.session;
+  let continuationToken = input.initialContinuationToken;
+  let continuationsUsed = 0;
+
+  for (;;) {
+    const observation = await observeRepairSession(session);
+    recordSessionObservation(input.config.statePath, input.attemptKey, observation, continuationsUsed);
+    input.slog.info(
+      {
+        sessionId: session.id,
+        status: observation.status,
+        finishReason: observation.finishReason,
+        failureKind: observation.failureKind,
+        terminalAction: observation.terminalAction,
+        toolSequence: observation.toolSequence,
+      },
+      "repair session reached monitored boundary",
+    );
+
+    if (!shouldSendRepairContinuation(observation, continuationsUsed, MAX_REPAIR_CONTINUATIONS)) {
+      if (shouldReleaseForRetry(observation)) {
+        updateAttempt(input.config.statePath, input.attemptKey, {
+          dispatchedAt: undefined,
+          lastSessionStatus: observation.status === "failed" ? "failed" : "abandoned",
+          lastSessionFailureKind: observation.failureKind ?? "no_terminal_action",
+          lastSessionFailure:
+            observation.failureMessage ?? "Repair session ended without a terminal Hootline action.",
+        });
+        await releaseDelivery(input.config.statePath, input.deliveryKey);
+        input.slog.info("repair session did not complete; delivery released for provider redelivery retry");
+      }
+      return;
+    }
+
+    continuationsUsed += 1;
+    continuationToken = toLocalContinuationToken(session.continuationToken, continuationToken);
+    updateAttempt(input.config.statePath, input.attemptKey, {
+      continuationsUsed,
+      lastSessionStatus: "running",
+    });
+    input.slog.info(
+      { sessionId: session.id, failureKind: observation.failureKind, continuationsUsed },
+      "repair session needs one bounded continuation",
+    );
+    session = await input.send(
+      {
+        message: buildContinuationPrompt(observation),
+        context: [
+          toContextBlock("Hootline loop monitor", {
+            status: observation.status,
+            finishReason: observation.finishReason,
+            failureKind: observation.failureKind,
+            failureMessage: observation.failureMessage,
+            toolSequence: observation.toolSequence,
+            requiredNextTools: ["edit_repo_file", "run_repo_checks", "publish_fix"],
+          }),
+        ],
+      },
+      {
+        auth: input.auth,
+        continuationToken,
+      },
+    );
+    updateAttempt(input.config.statePath, input.attemptKey, {
+      lastSessionId: session.id,
+      lastSessionStatus: "running",
+    });
+  }
+}
+
+function recordSessionObservation(
+  statePath: string,
+  attemptKey: string,
+  observation: RepairSessionObservation,
+  continuationsUsed: number,
+): void {
+  updateAttempt(statePath, attemptKey, {
+    lastSessionStatus: observation.status,
+    lastSessionFinishReason: observation.finishReason,
+    lastSessionFailureKind: observation.failureKind,
+    lastSessionFailure: observation.failureMessage,
+    lastSessionEndedAt: observation.endedAt,
+    lastToolSequence: observation.toolSequence,
+    continuationsUsed,
+  });
+}
+
+function shouldReleaseForRetry(observation: RepairSessionObservation): boolean {
+  if (observation.terminalAction !== undefined) return false;
+  return observation.status === "failed" || observation.status === "waiting" || observation.status === "abandoned";
 }
 
 async function handleSuccessfulPipeline(
@@ -295,6 +409,40 @@ function buildPrompt(mode: string): string {
     "",
     "Start by staging the repository snapshot, then inspect source files and make the smallest safe fix.",
   ].join("\n");
+}
+
+function buildContinuationPrompt(observation: RepairSessionObservation): string {
+  if (observation.failureKind === "length") {
+    return [
+      "Continue the same CI repair from the current repository snapshot.",
+      "You stopped because the prior model step hit the output limit before a terminal action completed.",
+      "Do not restate the diagnosis. Apply the smallest safe edit with edit_repo_file, run run_repo_checks, then publish_fix if checks pass.",
+      "If policy blocks the fix, post_provider_comment with the blocker and evidence.",
+    ].join("\n");
+  }
+  return [
+    "Continue the same CI repair from the current repository snapshot.",
+    "The prior turn stopped without a terminal Hootline action.",
+    "Use the next tool call to move the repair forward: edit_repo_file, run_repo_checks, publish_fix, rerun_pipeline, or post_provider_comment.",
+  ].join("\n");
+}
+
+function buildRepairAuth(event: NormalizedPipelineEvent, attemptKey: string): NonNullable<Parameters<SendFn>[1]["auth"]> {
+  return {
+    authenticator: event.provider,
+    principalId: event.actor ?? "pipeline-webhook",
+    principalType: "service",
+    attributes: {
+      provider: event.provider,
+      repo: event.repoSlug,
+      pipelineId: event.pipelineId,
+      attemptKey,
+    },
+  };
+}
+
+function repairContinuationToken(event: NormalizedPipelineEvent, attempt: number): string {
+  return `${eventAttemptKey(event)}:attempt-${attempt}`;
 }
 
 function buildSeedContext(

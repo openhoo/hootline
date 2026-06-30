@@ -2,6 +2,7 @@ import { defineTool } from "eve/tools";
 
 import { resolveStagedAttempt } from "../lib/current.ts";
 import { createLogger, logError } from "../lib/logger.ts";
+import { publishModelOutput } from "../lib/model-output.ts";
 import { getProviderClient } from "../lib/providers/index.ts";
 import { redact } from "../lib/redact.ts";
 import { collectSandboxChanges, runVerificationCommandsWithPolicy } from "../lib/sandbox.ts";
@@ -72,5 +73,8 @@ export default defineTool({
       logError(tlog, "publish_fix failed", error);
       throw error;
     }
+  },
+  toModelOutput(output) {
+    return publishModelOutput(output);
   },
 });
