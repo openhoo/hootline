@@ -5,7 +5,7 @@ import { createLogger, logError } from "../lib/logger.ts";
 import { verificationModelOutput } from "../lib/model-output.ts";
 import { runVerificationCommandsWithPolicy } from "../lib/sandbox.ts";
 import { updateAttempt } from "../lib/state.ts";
-import { optionalAttemptKeySchema } from "../lib/tool-input.ts";
+import { normalizeToolInput, optionalAttemptKeySchema } from "../lib/tool-input.ts";
 
 const log = createLogger("tools.run_repo_checks");
 
@@ -14,7 +14,8 @@ export default defineTool({
     "Run the repository verification commands configured by policy in /workspace/repo. Applies the configured sandbox network allowlist before running.",
   inputSchema: optionalAttemptKeySchema,
   async execute(input, ctx) {
-    const { config, attempt, policy, sandbox } = await resolveStagedAttempt(ctx, input);
+    const normalizedInput = normalizeToolInput(input);
+    const { config, attempt, policy, sandbox } = await resolveStagedAttempt(ctx, normalizedInput);
     const tlog = log.child({ attemptKey: attempt.key, provider: attempt.event.provider });
     tlog.debug("run_repo_checks invoked");
     try {

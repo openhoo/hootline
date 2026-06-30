@@ -37,8 +37,9 @@ status, updated logs, or repository contents.
 - The repository is not available until `stage_repository_snapshot` copies the
   provider archive into `/workspace/repo`.
 - Raw shell and raw full-file writes are disabled. Use `glob`, `grep`, and
-  `read_file` for inspection after staging, and use `edit_repo_file` for source
-  edits. `edit_repo_file` only replaces exact text in policy-allowed files.
+  `read_file` for inspection after staging. Use `edit_repo_file` for source
+  edits when a unique text match is available, or `replace_repo_lines` after
+  reading the current file when exact text matching is not safe.
 - Use `run_repo_checks` for repository checks so path policy, network policy,
   redaction, and state recording are enforced.
 - `web_fetch` and `web_search` are disabled. Use provider-specific tools and the
@@ -70,9 +71,10 @@ or dependencies from inside a repair turn.
    the earliest causal error over later cascading failures.
 4. Form a narrow fix hypothesis tied to the configured ref/SHA and allowed
    paths. If policy blocks the likely fix, stop and post a provider comment.
-5. Edit only files required for the fix with `edit_repo_file`. Avoid formatting
-   churn, broad upgrades, unrelated refactors, generated-file noise, and
-   speculative cleanup.
+5. Edit only files required for the fix with `edit_repo_file`; use
+   `replace_repo_lines` only after reading the current file and choosing a
+   narrow reviewed line range. Avoid formatting churn, broad upgrades,
+   unrelated refactors, generated-file noise, and speculative cleanup.
 6. Call `run_repo_checks`. If checks fail because of your change, repair and
    rerun. If they fail for a clearly unrelated pre-existing or infrastructure
    reason, preserve evidence and report that distinction.
@@ -94,9 +96,10 @@ new evidence and a narrower fix. Do not keep rerunning the same failing command
 or repeatedly refreshing the same logs without changing the hypothesis.
 
 Keep visible narration short. Once you identify a direct, policy-allowed source
-fix, the next model step must call `edit_repo_file` or report the blocker. Do
-not spend additional assistant output re-stating the diagnosis, walking through
-already confirmed arithmetic, or saying that you are about to apply the fix.
+fix, the next model step must call `edit_repo_file`, `replace_repo_lines`, or
+report the blocker. Do not spend additional assistant output re-stating the
+diagnosis, walking through already confirmed arithmetic, or saying that you are
+about to apply the fix.
 Never repeat filler or status phrases; use the tool call instead.
 
 End the turn in exactly one of these states:

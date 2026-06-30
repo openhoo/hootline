@@ -5,7 +5,7 @@ import { createLogger, logError } from "../lib/logger.ts";
 import { failureContextModelOutput } from "../lib/model-output.ts";
 import { getProviderClient } from "../lib/providers/index.ts";
 import { updateAttempt } from "../lib/state.ts";
-import { optionalAttemptKeySchema, readOptionalString } from "../lib/tool-input.ts";
+import { normalizeToolInput, optionalAttemptKeySchema, readOptionalString } from "../lib/tool-input.ts";
 
 const log = createLogger("tools.get_failure_context");
 
@@ -14,7 +14,8 @@ export default defineTool({
     "Refresh failed job metadata and redacted logs for the current pipeline attempt. Usually unnecessary because initial failure context is already seeded.",
   inputSchema: optionalAttemptKeySchema,
   async execute(input, ctx) {
-    const { config, attempt } = resolveCurrentAttempt(ctx, readOptionalString(input, "attemptKey"));
+    const normalizedInput = normalizeToolInput(input);
+    const { config, attempt } = resolveCurrentAttempt(ctx, readOptionalString(normalizedInput, "attemptKey"));
     const tlog = log.child({ attemptKey: attempt.key, provider: attempt.event.provider });
     tlog.debug("get_failure_context invoked");
     try {

@@ -483,14 +483,14 @@ function buildContinuationPrompt(observation: RepairSessionObservation): string 
     return [
       "Continue the same CI repair from the current repository snapshot.",
       "You stopped because the prior model step hit the output limit before a terminal action completed.",
-      "Do not restate the diagnosis. Apply the smallest safe edit with edit_repo_file, run run_repo_checks, then publish_fix if checks pass.",
+      "Do not restate the diagnosis. Apply the smallest safe edit with edit_repo_file, or replace_repo_lines after reading the current file if exact text matching is not safe. Then run run_repo_checks and publish_fix if checks pass.",
       "If policy blocks the fix, post_provider_comment with the blocker and evidence.",
     ].join("\n");
   }
   return [
     "Continue the same CI repair from the current repository snapshot.",
     "The prior turn stopped without a terminal Hootline action.",
-    "Use the next tool call to move the repair forward: edit_repo_file, run_repo_checks, publish_fix, rerun_pipeline, or post_provider_comment.",
+    "Use the next tool call to move the repair forward: edit_repo_file, replace_repo_lines, run_repo_checks, publish_fix, rerun_pipeline, or post_provider_comment.",
   ].join("\n");
 }
 

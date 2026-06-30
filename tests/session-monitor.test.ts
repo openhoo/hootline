@@ -97,6 +97,29 @@ test("stops repeated edit_repo_file failures as an edit loop", () => {
   assert.equal(shouldSendRepairContinuation(observation, 0, 1), false);
 });
 
+test("does not count recoverable edited-false results as failed edit tools", () => {
+  const state = createObservationState();
+  for (let index = 0; index < 3; index += 1) {
+    observeStreamEvent(state, {
+      type: "action.result",
+      data: {
+        status: "completed",
+        result: {
+          toolName: "edit_repo_file",
+          output: { edited: false, reason: "expected_text_not_uniquely_matched" },
+        },
+      },
+    });
+  }
+  observeStreamEvent(state, { type: "session.waiting", data: {} });
+
+  const observation = finalizeObservation(state);
+
+  assert.equal(observation.status, "waiting");
+  assert.equal(observation.failureKind, "no_terminal_action");
+  assert.deepEqual(observation.failedTools, []);
+});
+
 test("extracts channel-local continuation tokens from namespaced Eve tokens", () => {
   assert.equal(
     toLocalContinuationToken("ci:github:openhoo/fixture:abc123:1001", "fallback"),

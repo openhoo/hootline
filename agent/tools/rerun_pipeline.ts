@@ -10,7 +10,12 @@ import {
   recordRerunResult,
   updateAttempt,
 } from "../lib/state.ts";
-import { readOptionalString, readRequiredString, rerunSchema } from "../lib/tool-input.ts";
+import {
+  normalizeToolInput,
+  readOptionalString,
+  readRequiredAliasedString,
+  rerunSchema,
+} from "../lib/tool-input.ts";
 
 const log = createLogger("tools.rerun_pipeline");
 
@@ -19,8 +24,9 @@ export default defineTool({
     "Rerun failed jobs/pipeline when the failure is likely transient and no code change is appropriate.",
   inputSchema: rerunSchema,
   async execute(input, ctx) {
-    const { config, attempt } = resolveCurrentAttempt(ctx, readOptionalString(input, "attemptKey"));
-    const reason = readRequiredString(input, "reason");
+    const normalizedInput = normalizeToolInput(input);
+    const { config, attempt } = resolveCurrentAttempt(ctx, readOptionalString(normalizedInput, "attemptKey"));
+    const reason = readRequiredAliasedString(normalizedInput, "reason", ["message", "summary"]);
     const tlog = log.child({ attemptKey: attempt.key, provider: attempt.event.provider });
     const claim = claimRerunRequest(config.statePath, attempt.key, reason);
     if (!claim.claimed) {

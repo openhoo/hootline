@@ -7,7 +7,7 @@ import { getProviderClient } from "../lib/providers/index.ts";
 import { redact } from "../lib/redact.ts";
 import { collectSandboxChanges, runVerificationCommandsWithPolicy } from "../lib/sandbox.ts";
 import { clearSessionOutcomePatch, updateAttempt } from "../lib/state.ts";
-import { readRequiredString, summarySchema } from "../lib/tool-input.ts";
+import { normalizeToolInput, readRequiredAliasedString, summarySchema } from "../lib/tool-input.ts";
 
 const log = createLogger("tools.publish_fix");
 
@@ -16,7 +16,8 @@ export default defineTool({
     "Publish verified sandbox changes according to repository policy. This tool reruns configured checks before publishing and rejects disallowed file paths.",
   inputSchema: summarySchema,
   async execute(input, ctx) {
-    const { config, attempt, policy, sandbox } = await resolveStagedAttempt(ctx, input);
+    const normalizedInput = normalizeToolInput(input);
+    const { config, attempt, policy, sandbox } = await resolveStagedAttempt(ctx, normalizedInput);
     const tlog = log.child({ attemptKey: attempt.key, provider: attempt.event.provider });
     tlog.debug("publish_fix invoked");
     try {
@@ -43,7 +44,7 @@ export default defineTool({
         event: attempt.event,
         policy,
         changes,
-        summary: redact(readRequiredString(input, "summary"), 4_000),
+        summary: redact(readRequiredAliasedString(normalizedInput, "summary", ["message", "body"]), 4_000),
       });
       updateAttempt(config.statePath, attempt.key, {
         ...clearSessionOutcomePatch(),

@@ -6,7 +6,7 @@ import { createLogger, logError } from "../lib/logger.ts";
 import { getProviderClient } from "../lib/providers/index.ts";
 import { writeSnapshotMarker } from "../lib/sandbox.ts";
 import { updateAttempt } from "../lib/state.ts";
-import { optionalAttemptKeySchema, readOptionalString } from "../lib/tool-input.ts";
+import { normalizeToolInput, optionalAttemptKeySchema, readOptionalString } from "../lib/tool-input.ts";
 
 const log = createLogger("tools.stage_repository_snapshot");
 
@@ -15,7 +15,8 @@ export default defineTool({
     "Stage the failed repository snapshot into /workspace/repo from provider APIs without exposing provider credentials to the sandbox.",
   inputSchema: optionalAttemptKeySchema,
   async execute(input, ctx) {
-    const { config, attempt, policy } = resolveCurrentAttempt(ctx, readOptionalString(input, "attemptKey"));
+    const normalizedInput = normalizeToolInput(input);
+    const { config, attempt, policy } = resolveCurrentAttempt(ctx, readOptionalString(normalizedInput, "attemptKey"));
     const tlog = log.child({ attemptKey: attempt.key, provider: attempt.event.provider });
     tlog.debug("stage_repository_snapshot invoked");
     try {

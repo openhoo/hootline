@@ -4,7 +4,7 @@ import { resolveCurrentAttempt } from "../lib/current.ts";
 import { createLogger, logError } from "../lib/logger.ts";
 import { getProviderClient } from "../lib/providers/index.ts";
 import { clearSessionOutcomePatch, updateAttempt } from "../lib/state.ts";
-import { mergeSchema, readBoolean, readOptionalString } from "../lib/tool-input.ts";
+import { mergeSchema, normalizeToolInput, readAliasedBoolean, readOptionalString } from "../lib/tool-input.ts";
 
 const log = createLogger("tools.merge_change");
 
@@ -13,12 +13,21 @@ export default defineTool({
     "Merge the published fix change only when repo policy is auto_merge. Normally success webhooks handle this deterministically.",
   inputSchema: mergeSchema,
   async execute(input, ctx) {
-    const { config, attempt, policy } = resolveCurrentAttempt(ctx, readOptionalString(input, "attemptKey"));
+    const normalizedInput = normalizeToolInput(input);
+    const { config, attempt, policy } = resolveCurrentAttempt(ctx, readOptionalString(normalizedInput, "attemptKey"));
     const tlog = log.child({ attemptKey: attempt.key, provider: attempt.event.provider });
     if (policy.mode !== "auto_merge") {
       throw new Error("merge_change is only allowed when policy mode is auto_merge.");
     }
-    if (policy.autoMerge.requireSuccessfulPipeline && !readBoolean(input, "confirmedSuccessfulPipeline", false)) {
+    if (
+      policy.autoMerge.requireSuccessfulPipeline &&
+      !readAliasedBoolean(
+        normalizedInput,
+        "confirmedSuccessfulPipeline",
+        ["confirmed_successful_pipeline", "confirmed"],
+        false,
+      )
+    ) {
       throw new Error("Policy requires a successful fixer pipeline webhook before merge.");
     }
     if (attempt.changeNumber === undefined || attempt.publishedBranch === undefined) {

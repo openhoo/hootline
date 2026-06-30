@@ -4,6 +4,7 @@ import test from "node:test";
 import {
   assertSandboxSnapshotReady,
   collectSandboxChanges,
+  replaceSandboxLines,
   replaceSandboxText,
   runVerificationCommands,
   runVerificationCommandsWithPolicy,
@@ -126,6 +127,74 @@ test("normalizes documented workspace paths for repository edits", async () => {
   assert.equal(sandbox.textFiles.get("repo/src/app.ts"), "export const value = 2;\n");
 });
 
+test("normalizes small repository edit path mistakes", async () => {
+  const sandbox = new FakeSandbox();
+  sandbox.textFiles.set("repo/src/app.ts", "export const value = 1;\n");
+
+  const result = await replaceSandboxText(sandbox, makePolicy(), {
+    path: "`repo\\\\src\\\\app.ts:12`",
+    expected: "value = 1",
+    replacement: "value = 2",
+  });
+
+  assert.equal(result.path, "src/app.ts");
+  assert.equal(result.pathCorrection?.strategy, "normalized");
+  assert.equal(sandbox.textFiles.get("repo/src/app.ts"), "export const value = 2;\n");
+});
+
+test("corrects a unique high-confidence repository edit path typo", async () => {
+  const sandbox = new FakeSandbox();
+  sandbox.textFiles.set("repo/src/app.ts", "export const value = 1;\n");
+
+  const result = await replaceSandboxText(sandbox, makePolicy(), {
+    path: "src/ap.ts",
+    expected: "value = 1",
+    replacement: "value = 2",
+  });
+
+  assert.equal(result.path, "src/app.ts");
+  assert.equal(result.pathCorrection?.strategy, "fuzzy");
+  assert.equal(sandbox.textFiles.get("repo/src/app.ts"), "export const value = 2;\n");
+});
+
+test("rejects ambiguous repository edit path correction", async () => {
+  const sandbox = new FakeSandbox();
+  sandbox.textFiles.set("repo/src/app.ts", "export const value = 1;\n");
+  sandbox.textFiles.set("repo/docs/app.ts", "export const value = 1;\n");
+
+  await assert.rejects(
+    replaceSandboxText(sandbox, makePolicy(), {
+      path: "app.ts",
+      expected: "value = 1",
+      replacement: "value = 2",
+    }),
+    /Repository file does not exist or is not readable as text: app\.ts/,
+  );
+});
+
+test("rejects unsafe forgiving repository edit paths", async () => {
+  const sandbox = new FakeSandbox();
+  sandbox.textFiles.set("repo/src/app.ts", "export const value = 1;\n");
+
+  await assert.rejects(
+    replaceSandboxText(sandbox, makePolicy(), {
+      path: "src/../docs/app.ts",
+      expected: "value = 1",
+      replacement: "value = 2",
+    }),
+    /escapes policy boundaries/,
+  );
+
+  await assert.rejects(
+    replaceSandboxText(sandbox, makePolicy(), {
+      path: "C:\\workspace\\repo\\src\\app.ts",
+      expected: "value = 1",
+      replacement: "value = 2",
+    }),
+    /Invalid repository edit path/,
+  );
+});
+
 test("replaces a uniquely matching line when only indentation differs", async () => {
   const sandbox = new FakeSandbox();
   sandbox.textFiles.set(
@@ -158,6 +227,152 @@ test("replaces a uniquely matching line when only indentation differs", async ()
   );
 });
 
+test("replaces text copied from numbered read_file output", async () => {
+  const sandbox = new FakeSandbox();
+  sandbox.textFiles.set("repo/src/app.ts", "export const value = 1;\n");
+
+  const result = await replaceSandboxText(sandbox, makePolicy(), {
+    path: "src/app.ts",
+    expected: "1: export const value = 1;\n",
+    replacement: "1: export const value = 2;\n",
+  });
+
+  assert.equal(result.matchStrategy, "line_number_prefix_stripped");
+  assert.equal(sandbox.textFiles.get("repo/src/app.ts"), "export const value = 2;\n");
+});
+
+test("replaces text copied inside fenced code blocks", async () => {
+  const sandbox = new FakeSandbox();
+  sandbox.textFiles.set("repo/src/app.ts", "export const value = 1;\n");
+
+  const result = await replaceSandboxText(sandbox, makePolicy(), {
+    path: "src/app.ts",
+    expected: "```ts\nexport const value = 1;\n```",
+    replacement: "```ts\nexport const value = 2;\n```",
+  });
+
+  assert.equal(result.matchStrategy, "fenced_code_block");
+  assert.equal(sandbox.textFiles.get("repo/src/app.ts"), "export const value = 2;\n");
+});
+
+test("replaces text when only line endings differ", async () => {
+  const sandbox = new FakeSandbox();
+  sandbox.textFiles.set("repo/src/app.ts", "export const value = 1;\r\nexport const next = 2;\r\n");
+
+  const result = await replaceSandboxText(sandbox, makePolicy(), {
+    path: "src/app.ts",
+    expected: "export const value = 1;\nexport const next = 2;",
+    replacement: "export const value = 3;\nexport const next = 4;",
+  });
+
+  assert.equal(result.matchStrategy, "line_endings_normalized");
+  assert.equal(sandbox.textFiles.get("repo/src/app.ts"), "export const value = 3;\r\nexport const next = 4;\r\n");
+});
+
+test("decodes escaped multiline replacement text for unique source edits", async () => {
+  const sandbox = new FakeSandbox();
+  sandbox.textFiles.set(
+    "repo/src/shipping.js",
+    [
+      "export function quoteShipping(serviceLevel) {",
+      "  const freeShippingApplied =",
+      "    shippingBasisCents >= FREE_SHIPPING_THRESHOLD_CENTS;",
+      "  return freeShippingApplied;",
+      "}",
+      "",
+    ].join("\n"),
+  );
+
+  const result = await replaceSandboxText(sandbox, makePolicy(), {
+    path: "src/shipping.js",
+    expected: [
+      "  const freeShippingApplied =",
+      "    shippingBasisCents >= FREE_SHIPPING_THRESHOLD_CENTS;",
+    ].join("\n"),
+    replacement:
+      "  const freeShippingApplied =\\n    serviceLevel === \"standard\" &&\\n    shippingBasisCents >= FREE_SHIPPING_THRESHOLD_CENTS;",
+  });
+
+  assert.equal(result.matchStrategy, "escaped_sequences_decoded");
+  assert.equal(
+    sandbox.textFiles.get("repo/src/shipping.js"),
+    [
+      "export function quoteShipping(serviceLevel) {",
+      "  const freeShippingApplied =",
+      "    serviceLevel === \"standard\" &&",
+      "    shippingBasisCents >= FREE_SHIPPING_THRESHOLD_CENTS;",
+      "  return freeShippingApplied;",
+      "}",
+      "",
+    ].join("\n"),
+  );
+});
+
+test("decodes escaped expected and replacement text for unique source edits", async () => {
+  const sandbox = new FakeSandbox();
+  sandbox.textFiles.set("repo/src/app.ts", "const value =\n  1;\n");
+
+  const result = await replaceSandboxText(sandbox, makePolicy(), {
+    path: "src/app.ts",
+    expected: "const value =\\n  1;",
+    replacement: "const value =\\n  2;",
+  });
+
+  assert.equal(result.matchStrategy, "escaped_sequences_decoded");
+  assert.equal(sandbox.textFiles.get("repo/src/app.ts"), "const value =\n  2;\n");
+});
+
+test("replaces a policy-allowed line range and preserves dominant line endings", async () => {
+  const sandbox = new FakeSandbox();
+  sandbox.textFiles.set("repo/src/app.ts", "one\r\ntwo\r\nthree\r\nfour\r\n");
+
+  const result = await replaceSandboxLines(sandbox, makePolicy(), {
+    path: "src/app.ts",
+    startLine: 2,
+    endLine: 3,
+    replacement: "TWO\nTHREE\n",
+    expected: "two\nthree\n",
+  });
+
+  assert.equal(result.matchStrategy, "line_range");
+  assert.equal(sandbox.textFiles.get("repo/src/app.ts"), "one\r\nTWO\r\nTHREE\r\nfour\r\n");
+});
+
+test("rejects unsafe or invalid line-range replacements", async () => {
+  const sandbox = new FakeSandbox();
+  sandbox.textFiles.set("repo/src/app.ts", "one\ntwo\n");
+  sandbox.textFiles.set("repo/README.md", "one\ntwo\n");
+
+  await assert.rejects(
+    replaceSandboxLines(sandbox, makePolicy(), {
+      path: "README.md",
+      startLine: 1,
+      endLine: 1,
+      replacement: "ONE\n",
+    }),
+    /Edit path is not allowed by policy: README\.md/,
+  );
+  await assert.rejects(
+    replaceSandboxLines(sandbox, makePolicy(), {
+      path: "src/app.ts",
+      startLine: 2,
+      endLine: 3,
+      replacement: "TWO\n",
+    }),
+    /outside src\/app\.ts/,
+  );
+  await assert.rejects(
+    replaceSandboxLines(sandbox, makePolicy(), {
+      path: "src/app.ts",
+      startLine: 1,
+      endLine: 1,
+      replacement: "ONE\n",
+      expected: "different\n",
+    }),
+    /Expected text did not match current src\/app\.ts lines 1-1/,
+  );
+});
+
 test("rejects indentation-insensitive edits when the trimmed block is ambiguous", async () => {
   const sandbox = new FakeSandbox();
   sandbox.textFiles.set(
@@ -186,6 +401,7 @@ test("rejects indentation-insensitive edits when the trimmed block is ambiguous"
 test("rejects edit paths outside policy and ambiguous replacements", async () => {
   const sandbox = new FakeSandbox();
   sandbox.textFiles.set("repo/src/app.ts", "same\nsame\n");
+  sandbox.textFiles.set("repo/README.md", "anything\n");
 
   await assert.rejects(
     replaceSandboxText(sandbox, makePolicy(), {
@@ -271,6 +487,12 @@ class FakeSandbox {
     }
     if (input.command === "mkdir -p .hootline") {
       return { exitCode: 0, stdout: "", stderr: "" };
+    }
+    if (input.command === "find repo -type f -not -path 'repo/.git/*' -print0") {
+      const paths = new Set<string>();
+      for (const path of this.textFiles.keys()) paths.add(path);
+      for (const path of this.binaryFiles.keys()) paths.add(path);
+      return { exitCode: 0, stdout: `${[...paths].sort().join("\0")}\0`, stderr: "" };
     }
     return this.commandResults.shift() ?? { exitCode: 0, stdout: "", stderr: "" };
   }

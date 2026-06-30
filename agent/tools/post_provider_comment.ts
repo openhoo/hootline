@@ -4,7 +4,12 @@ import { resolveCurrentAttempt } from "../lib/current.ts";
 import { createLogger, logError } from "../lib/logger.ts";
 import { getProviderClient } from "../lib/providers/index.ts";
 import { clearSessionOutcomePatch, updateAttempt } from "../lib/state.ts";
-import { commentSchema, readOptionalString, readRequiredString } from "../lib/tool-input.ts";
+import {
+  commentSchema,
+  normalizeToolInput,
+  readOptionalString,
+  readRequiredAliasedString,
+} from "../lib/tool-input.ts";
 
 const log = createLogger("tools.post_provider_comment");
 
@@ -13,12 +18,16 @@ export default defineTool({
     "Post a concise status or blocker comment back to the provider surface for the current pipeline attempt.",
   inputSchema: commentSchema,
   async execute(input, ctx) {
-    const { config, attempt } = resolveCurrentAttempt(ctx, readOptionalString(input, "attemptKey"));
+    const normalizedInput = normalizeToolInput(input);
+    const { config, attempt } = resolveCurrentAttempt(ctx, readOptionalString(normalizedInput, "attemptKey"));
     const tlog = log.child({ attemptKey: attempt.key, provider: attempt.event.provider });
     tlog.debug("post_provider_comment invoked");
     try {
       // The comment body is model-authored; do not log it.
-      await getProviderClient(attempt.event.provider).postComment(attempt.event, readRequiredString(input, "body"));
+      await getProviderClient(attempt.event.provider).postComment(
+        attempt.event,
+        readRequiredAliasedString(normalizedInput, "body", ["message", "comment", "summary"]),
+      );
       updateAttempt(config.statePath, attempt.key, {
         ...clearSessionOutcomePatch(),
         lastSessionStatus: "completed",

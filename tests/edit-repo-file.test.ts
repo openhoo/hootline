@@ -9,7 +9,7 @@ import { eventAttemptKey, recordAttempt, updateAttempt } from "../agent/lib/stat
 import { writeSnapshotMarker } from "../agent/lib/sandbox.ts";
 import type { NormalizedPipelineEvent, RepoPolicy } from "../agent/lib/types.ts";
 
-test("edit_repo_file rejects a repeated identical missed edit", async () => {
+test("edit_repo_file returns recoverable diagnostics for repeated identical missed edits", async () => {
   const previousStatePath = process.env.HOOTLINE_STATE_PATH;
   const root = mkdtempSync(join(tmpdir(), "hootline-edit-tool-"));
   const statePath = join(root, "state.json");
@@ -43,16 +43,91 @@ test("edit_repo_file rejects a repeated identical missed edit", async () => {
   };
 
   try {
-    const first = await editRepoFileTool.execute(input, ctx);
+    const first = (await editRepoFileTool.execute(input, ctx)) as Record<string, unknown>;
     assert.equal(first.edited, false);
     assert.equal(first.reason, "expected_text_not_uniquely_matched");
 
-    await assert.rejects(
-      async () => {
-        await editRepoFileTool.execute(input, ctx);
+    const second = (await editRepoFileTool.execute(input, ctx)) as Record<string, unknown>;
+    assert.equal(second.edited, false);
+    assert.equal(second.reason, "duplicate_expected_text_miss");
+    assert.equal(second.recoveryNextTool, "read_file");
+    assert.equal(second.fallbackTool, "replace_repo_lines");
+    assert.equal(second.currentFileHash, first.currentFileHash);
+
+    sandbox.textFiles.set("repo/src/catalog.js", "export const catalog = [item];\n");
+    const third = (await editRepoFileTool.execute(input, ctx)) as Record<string, unknown>;
+    assert.equal(third.edited, false);
+    assert.equal(third.reason, "expected_text_not_uniquely_matched");
+    assert.notEqual(third.currentFileHash, first.currentFileHash);
+  } finally {
+    restoreEnv("HOOTLINE_STATE_PATH", previousStatePath);
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("edit_repo_file selects the only replacement alias that yields a valid edit", async () => {
+  const previousStatePath = process.env.HOOTLINE_STATE_PATH;
+  const root = mkdtempSync(join(tmpdir(), "hootline-edit-tool-"));
+  const statePath = join(root, "state.json");
+  process.env.HOOTLINE_STATE_PATH = statePath;
+  const event = makeEvent();
+  const policy = makePolicy();
+  const attempt = recordAttempt(statePath, event, policy);
+  updateAttempt(statePath, attempt.key, { repoStagedAt: "2026-06-30T10:00:00.000Z" });
+  const sandbox = new FakeSandbox();
+  sandbox.textFiles.set("repo/src/catalog.js", "export const value = 1;\n");
+  await writeSnapshotMarker(sandbox, attempt);
+  const ctx = makeCtx(event, sandbox);
+
+  try {
+    const output = (await editRepoFileTool.execute(
+      {
+        path: "src/catalog.js",
+        expected: "value = 1",
+        new_text: "value = 1",
+        replace: "value = 2",
       },
-      /Repeated edit_repo_file miss for src\/catalog\.js/,
-    );
+      ctx,
+    )) as Record<string, unknown>;
+
+    assert.equal(output.edited, true);
+    assert.equal(output.replacementKey, "replace");
+    assert.equal(sandbox.textFiles.get("repo/src/catalog.js"), "export const value = 2;\n");
+  } finally {
+    restoreEnv("HOOTLINE_STATE_PATH", previousStatePath);
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("edit_repo_file returns diagnostics when replacement aliases are ambiguous", async () => {
+  const previousStatePath = process.env.HOOTLINE_STATE_PATH;
+  const root = mkdtempSync(join(tmpdir(), "hootline-edit-tool-"));
+  const statePath = join(root, "state.json");
+  process.env.HOOTLINE_STATE_PATH = statePath;
+  const event = makeEvent();
+  const policy = makePolicy();
+  const attempt = recordAttempt(statePath, event, policy);
+  updateAttempt(statePath, attempt.key, { repoStagedAt: "2026-06-30T10:00:00.000Z" });
+  const sandbox = new FakeSandbox();
+  sandbox.textFiles.set("repo/src/catalog.js", "export const value = 1;\n");
+  await writeSnapshotMarker(sandbox, attempt);
+  const ctx = makeCtx(event, sandbox);
+
+  try {
+    const output = (await editRepoFileTool.execute(
+      {
+        path: "src/catalog.js",
+        expected: "value = 1",
+        new_text: "value = 2",
+        replace: "value = 3",
+      },
+      ctx,
+    )) as Record<string, unknown>;
+
+    assert.equal(output.edited, false);
+    assert.equal(output.reason, "ambiguous_replacement_aliases");
+    assert.match(String(output.message), /multiple valid edits/);
+    assert.equal(sandbox.textFiles.get("repo/src/catalog.js"), "export const value = 1;\n");
   } finally {
     restoreEnv("HOOTLINE_STATE_PATH", previousStatePath);
     rmSync(root, { recursive: true, force: true });
@@ -80,6 +155,27 @@ class FakeSandbox {
   async writeTextFile(input: { path: string; content: string }) {
     this.textFiles.set(input.path, input.content);
   }
+}
+
+function makeCtx(
+  event: NormalizedPipelineEvent,
+  sandbox: FakeSandbox,
+): Parameters<typeof editRepoFileTool.execute>[1] {
+  return {
+    session: {
+      auth: {
+        current: {
+          attributes: { attemptKey: eventAttemptKey(event) },
+        },
+      },
+    },
+    async getSandbox() {
+      return sandbox;
+    },
+    async getSkill() {
+      throw new Error("not used");
+    },
+  } as unknown as Parameters<typeof editRepoFileTool.execute>[1];
 }
 
 function makeEvent(): NormalizedPipelineEvent {

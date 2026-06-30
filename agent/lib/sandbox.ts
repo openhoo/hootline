@@ -38,7 +38,8 @@ interface VerificationResult {
 type NetworkPolicyStatus = NonNullable<VerificationResult["networkPolicy"]>;
 
 type SandboxChangeSession = Pick<SandboxSession, "run" | "readBinaryFile">;
-type SandboxTextEditSession = Pick<SandboxSession, "readTextFile" | "writeTextFile">;
+type SandboxTextEditSession = Pick<SandboxSession, "readTextFile" | "writeTextFile" | "run">;
+type SandboxPathResolutionSession = Pick<SandboxSession, "run" | "readTextFile">;
 type SandboxVerificationSession = Pick<SandboxSession, "run" | "setNetworkPolicy">;
 type SandboxMarkerWriter = Pick<SandboxSession, "id" | "run" | "writeTextFile">;
 type SandboxMarkerReader = Pick<SandboxSession, "id" | "run" | "readTextFile">;
@@ -50,12 +51,51 @@ export interface SandboxTextReplacement {
   replacement: string;
 }
 
+export interface SandboxTextReplacementCandidate {
+  key?: string | undefined;
+  text: string;
+}
+
+export interface SandboxTextReplacementWithCandidates {
+  path: string;
+  expected: string;
+  replacements: readonly SandboxTextReplacementCandidate[];
+}
+
+export interface SandboxLineReplacement {
+  path: string;
+  startLine: number;
+  endLine: number;
+  replacement: string;
+  expected?: string | undefined;
+}
+
 export interface SandboxTextReplacementResult {
   path: string;
   replacements: number;
   beforeBytes: number;
   afterBytes: number;
-  matchStrategy: "exact" | "indentation_insensitive";
+  matchStrategy:
+    | "exact"
+    | "fenced_code_block"
+    | "line_number_prefix_stripped"
+    | "line_endings_normalized"
+    | "escaped_sequences_decoded"
+    | "indentation_insensitive"
+    | "line_range";
+  replacementKey?: string | undefined;
+  pathCorrection?: SandboxRepoPathCorrection | undefined;
+}
+
+export interface SandboxRepoPathResolution {
+  path: string;
+  correction?: SandboxRepoPathCorrection | undefined;
+}
+
+export interface SandboxRepoPathCorrection {
+  originalPath: string;
+  correctedPath: string;
+  strategy: "normalized" | "case_insensitive" | "unique_suffix" | "fuzzy";
 }
 
 export function validateChangesAgainstPolicy(
@@ -116,15 +156,28 @@ export async function replaceSandboxText(
   policy: RepoPolicy,
   edit: SandboxTextReplacement,
 ): Promise<SandboxTextReplacementResult> {
-  const path = normalizeRepoEditPath(edit.path);
+  return replaceSandboxTextWithCandidates(sandbox, policy, {
+    path: edit.path,
+    expected: edit.expected,
+    replacements: [{ text: edit.replacement }],
+  });
+}
+
+export async function replaceSandboxTextWithCandidates(
+  sandbox: SandboxTextEditSession,
+  policy: RepoPolicy,
+  edit: SandboxTextReplacementWithCandidates,
+): Promise<SandboxTextReplacementResult> {
+  const resolvedPath = await resolveSandboxRepoPath(sandbox, edit.path);
+  const path = resolvedPath.path;
   if (!matchesAnyPattern(path, policy.allowedFileGlobs)) {
     throw new Error(`Edit path is not allowed by policy: ${path}`);
   }
   if (edit.expected.length === 0) {
     throw new Error("expected text must not be empty.");
   }
-  if (edit.expected === edit.replacement) {
-    throw new Error("replacement text must differ from expected text.");
+  if (edit.replacements.length === 0) {
+    throw new Error("replacement text is required.");
   }
 
   let current: string | null | undefined;
@@ -137,20 +190,11 @@ export async function replaceSandboxText(
     throw new Error(`Repository file does not exist or is not readable as text: ${path}`);
   }
 
-  const matches = countOccurrences(current, edit.expected);
-  let next: string;
-  let matchStrategy: SandboxTextReplacementResult["matchStrategy"] = "exact";
-  if (matches === 1) {
-    next = current.replace(edit.expected, edit.replacement);
-  } else if (matches === 0) {
-    const fallback = replaceIndentationInsensitiveBlock(current, edit.expected, edit.replacement);
-    if (fallback === undefined) {
-      throw new Error(`expected text must occur exactly once in ${path}; found ${matches}.`);
-    }
-    next = fallback.content;
-    matchStrategy = "indentation_insensitive";
-  } else {
-    throw new Error(`expected text must occur exactly once in ${path}; found ${matches}.`);
+  const replacement = buildTextReplacementFromCandidates(current, edit.expected, edit.replacements, path);
+  const next = replacement.content;
+  const matchStrategy = replacement.strategy;
+  if (next === current) {
+    throw new Error("replacement text must differ from expected text.");
   }
   const beforeBytes = Buffer.byteLength(current, "utf8");
   const afterBytes = Buffer.byteLength(next, "utf8");
@@ -159,7 +203,127 @@ export async function replaceSandboxText(
   }
 
   await sandbox.writeTextFile({ path: `repo/${path}`, content: next });
-  return { path, replacements: 1, beforeBytes, afterBytes, matchStrategy };
+  return {
+    path,
+    replacements: 1,
+    beforeBytes,
+    afterBytes,
+    matchStrategy,
+    replacementKey: replacement.replacementKey,
+    pathCorrection: resolvedPath.correction,
+  };
+}
+
+export async function replaceSandboxLines(
+  sandbox: SandboxTextEditSession,
+  policy: RepoPolicy,
+  edit: SandboxLineReplacement,
+): Promise<SandboxTextReplacementResult> {
+  const resolvedPath = await resolveSandboxRepoPath(sandbox, edit.path);
+  const path = resolvedPath.path;
+  if (!matchesAnyPattern(path, policy.allowedFileGlobs)) {
+    throw new Error(`Edit path is not allowed by policy: ${path}`);
+  }
+  if (!Number.isInteger(edit.startLine) || !Number.isInteger(edit.endLine)) {
+    throw new Error("startLine and endLine must be integers.");
+  }
+  if (edit.startLine < 1 || edit.endLine < edit.startLine) {
+    throw new Error("Line range must be 1-based and startLine must be <= endLine.");
+  }
+
+  let current: string | null | undefined;
+  try {
+    current = await sandbox.readTextFile({ path: `repo/${path}` });
+  } catch {
+    current = undefined;
+  }
+  if (typeof current !== "string") {
+    throw new Error(`Repository file does not exist or is not readable as text: ${path}`);
+  }
+
+  const currentLines = splitLogicalLines(current);
+  if (edit.endLine > currentLines.length) {
+    throw new Error(`Line range ${edit.startLine}-${edit.endLine} is outside ${path}; file has ${currentLines.length} lines.`);
+  }
+  const startIndex = edit.startLine - 1;
+  const selected = currentLines.slice(startIndex, edit.endLine).map((line) => line.raw).join("");
+  if (edit.expected !== undefined && selected !== normalizeLineEndings(edit.expected, dominantEol(current))) {
+    throw new Error(`Expected text did not match current ${path} lines ${edit.startLine}-${edit.endLine}.`);
+  }
+
+  const eol = dominantEol(current);
+  const replacement = normalizeLineEndings(decodeEscapedText(edit.replacement) ?? edit.replacement, eol);
+  const before = currentLines.slice(0, startIndex).map((line) => line.raw).join("");
+  const after = currentLines.slice(edit.endLine).map((line) => line.raw).join("");
+  const next = `${before}${replacement}${after}`;
+  if (next === current) {
+    throw new Error("replacement text must change the selected line range.");
+  }
+
+  const beforeBytes = Buffer.byteLength(current, "utf8");
+  const afterBytes = Buffer.byteLength(next, "utf8");
+  if (afterBytes > policy.maxSnapshotBytes) {
+    throw new Error(`Edited file is ${afterBytes} bytes, above policy limit ${policy.maxSnapshotBytes}.`);
+  }
+
+  await sandbox.writeTextFile({ path: `repo/${path}`, content: next });
+  return {
+    path,
+    replacements: 1,
+    beforeBytes,
+    afterBytes,
+    matchStrategy: "line_range",
+    pathCorrection: resolvedPath.correction,
+  };
+}
+
+export async function resolveSandboxRepoPath(
+  sandbox: SandboxPathResolutionSession,
+  rawPath: string,
+): Promise<SandboxRepoPathResolution> {
+  const normalized = normalizeRepoEditPathForgiving(rawPath);
+  if (await sandboxRepoTextFileExists(sandbox, normalized.path)) return normalized;
+
+  const files = await listSandboxRepoFiles(sandbox);
+  const corrected = chooseRepoPathCorrection(normalized.path, files);
+  if (corrected === undefined) {
+    throw new Error(`Repository file does not exist or is not readable as text: ${normalized.path}`);
+  }
+  return {
+    path: corrected.path,
+    correction: {
+      originalPath: rawPath,
+      correctedPath: corrected.path,
+      strategy: corrected.strategy,
+    },
+  };
+}
+
+export function normalizeWorkspaceRepoPath(rawPath: string): SandboxRepoPathResolution {
+  const original = rawPath;
+  let candidate = stripMatchingQuotes(rawPath.trim());
+  rejectWindowsAbsoluteRepoPath(candidate);
+  candidate = candidate.replaceAll("\\", "/").replace(/\/+/g, "/").replace(/\/+$/u, "");
+  if (candidate === "." || candidate === "./" || candidate === "repo" || candidate === "/workspace/repo") {
+    return {
+      path: "/workspace/repo",
+      correction:
+        candidate === original
+          ? undefined
+          : { originalPath: original, correctedPath: "/workspace/repo", strategy: "normalized" },
+    };
+  }
+  const normalized = normalizeRepoEditPathForgiving(rawPath);
+  return {
+    path: `/workspace/repo/${normalized.path}`,
+    correction:
+      normalized.correction === undefined
+        ? undefined
+        : {
+            ...normalized.correction,
+            correctedPath: `/workspace/repo/${normalized.path}`,
+          },
+  };
 }
 
 export async function runVerificationCommands(
@@ -377,6 +541,377 @@ function stripRepoEditPrefix(path: string): string {
   if (path.startsWith("/workspace/repo/")) return path.slice("/workspace/repo/".length);
   if (path.startsWith("repo/")) return path.slice("repo/".length);
   return path;
+}
+
+function normalizeRepoEditPathForgiving(path: string): SandboxRepoPathResolution {
+  const original = path;
+  let candidate = stripMatchingQuotes(path.trim());
+  rejectWindowsAbsoluteRepoPath(candidate);
+  candidate = candidate.replaceAll("\\", "/");
+  candidate = stripLineSuffix(candidate);
+  candidate = candidate.replace(/\/+/g, "/");
+  candidate = stripRepoEditPrefix(candidate);
+  while (candidate.startsWith("./")) candidate = candidate.slice(2);
+  const normalized = normalizeRepoEditPath(candidate);
+  if (normalized === original) return { path: normalized };
+  return {
+    path: normalized,
+    correction: {
+      originalPath: original,
+      correctedPath: normalized,
+      strategy: "normalized",
+    },
+  };
+}
+
+function rejectWindowsAbsoluteRepoPath(path: string): void {
+  if (/^[A-Za-z]:[\\/]/u.test(path)) {
+    throw new Error(`Invalid repository edit path: ${JSON.stringify(path)}`);
+  }
+}
+
+function stripMatchingQuotes(value: string): string {
+  if (value.length < 2) return value;
+  const first = value[0];
+  const last = value[value.length - 1];
+  if ((first === `"` && last === `"`) || (first === "'" && last === "'") || (first === "`" && last === "`")) {
+    return value.slice(1, -1).trim();
+  }
+  return value;
+}
+
+function stripLineSuffix(value: string): string {
+  return value.replace(/:(?:\d+)(?::\d+)?$/u, "");
+}
+
+async function sandboxRepoTextFileExists(sandbox: SandboxPathResolutionSession, path: string): Promise<boolean> {
+  try {
+    return typeof (await sandbox.readTextFile({ path: `repo/${path}` })) === "string";
+  } catch {
+    return false;
+  }
+}
+
+async function listSandboxRepoFiles(sandbox: SandboxPathResolutionSession): Promise<string[]> {
+  const result = await sandbox.run({
+    command: "find repo -type f -not -path 'repo/.git/*' -print0",
+  });
+  const exitCode = typeof result.exitCode === "number" ? result.exitCode : 0;
+  if (exitCode !== 0) return [];
+  return String(result.stdout ?? "")
+    .split("\0")
+    .filter((path) => path.startsWith("repo/"))
+    .map((path) => path.slice("repo/".length))
+    .filter((path) => path.length > 0 && !path.split("/").includes(".git"));
+}
+
+function chooseRepoPathCorrection(
+  targetPath: string,
+  files: readonly string[],
+): { path: string; strategy: SandboxRepoPathCorrection["strategy"] } | undefined {
+  const targetLower = targetPath.toLowerCase();
+  const targetBase = pathPosix.basename(targetPath).toLowerCase();
+  const targetDir = pathPosix.dirname(targetPath).toLowerCase();
+  const targetExt = pathPosix.extname(targetPath).toLowerCase();
+  const scored = files
+    .map((file) => {
+      const lower = file.toLowerCase();
+      const base = pathPosix.basename(file).toLowerCase();
+      const dir = pathPosix.dirname(file).toLowerCase();
+      if (lower === targetLower) return { path: file, score: 100, strategy: "case_insensitive" as const };
+      if (lower.endsWith(`/${targetLower}`)) return { path: file, score: 96, strategy: "unique_suffix" as const };
+      if (base === targetBase) {
+        const dirDistance = levenshteinDistance(dir, targetDir);
+        return { path: file, score: 90 - Math.min(dirDistance, 10), strategy: "unique_suffix" as const };
+      }
+      const fullDistance = levenshteinDistance(lower, targetLower);
+      const fullLimit = Math.max(2, Math.floor(targetLower.length * 0.1));
+      if (fullDistance <= fullLimit) {
+        return { path: file, score: 86 - fullDistance, strategy: "fuzzy" as const };
+      }
+      const baseDistance = levenshteinDistance(base, targetBase);
+      if (targetExt.length > 0 && pathPosix.extname(file).toLowerCase() === targetExt && baseDistance <= 2) {
+        const dirMatches = dir === targetDir || dir.endsWith(`/${targetDir}`) || targetDir.endsWith(`/${dir}`);
+        if (dirMatches) return { path: file, score: 82 - baseDistance, strategy: "fuzzy" as const };
+      }
+      return { path: file, score: 0, strategy: "fuzzy" as const };
+    })
+    .filter((candidate) => candidate.score >= 80)
+    .sort((left, right) => right.score - left.score);
+
+  const best = scored[0];
+  if (best === undefined) return undefined;
+  const second = scored[1];
+  if (second !== undefined && best.score - second.score < 5) return undefined;
+  return { path: best.path, strategy: best.strategy };
+}
+
+function levenshteinDistance(left: string, right: string): number {
+  if (left === right) return 0;
+  if (left.length === 0) return right.length;
+  if (right.length === 0) return left.length;
+  let previous = Array.from({ length: right.length + 1 }, (_, index) => index);
+  for (let leftIndex = 0; leftIndex < left.length; leftIndex += 1) {
+    const current = [leftIndex + 1];
+    for (let rightIndex = 0; rightIndex < right.length; rightIndex += 1) {
+      const cost = left[leftIndex] === right[rightIndex] ? 0 : 1;
+      const insertion = (current[rightIndex] ?? Number.MAX_SAFE_INTEGER) + 1;
+      const deletion = (previous[rightIndex + 1] ?? Number.MAX_SAFE_INTEGER) + 1;
+      const substitution = (previous[rightIndex] ?? Number.MAX_SAFE_INTEGER) + cost;
+      current[rightIndex + 1] = Math.min(
+        insertion,
+        deletion,
+        substitution,
+      );
+    }
+    previous = current;
+  }
+  return previous[right.length] ?? Number.MAX_SAFE_INTEGER;
+}
+
+function buildTextReplacement(
+  current: string,
+  expected: string,
+  replacement: string,
+  path: string,
+): {
+  content: string;
+  strategy: SandboxTextReplacementResult["matchStrategy"];
+} {
+  for (const variant of buildTextReplacementVariants(current, expected, replacement)) {
+    if (variant.expected.length === 0) continue;
+    if (variant.expected === variant.replacement) continue;
+    const matches = countOccurrences(current, variant.expected);
+    if (matches === 1) {
+      return {
+        content: current.replace(variant.expected, variant.replacement),
+        strategy: variant.strategy,
+      };
+    }
+    if (matches > 1) {
+      throw new Error(`expected text must occur exactly once in ${path}; found ${matches}.`);
+    }
+  }
+
+  for (const variant of buildTextReplacementVariants(current, expected, replacement)) {
+    if (variant.expected.length === 0) continue;
+    if (variant.expected === variant.replacement) continue;
+    const fallback = replaceIndentationInsensitiveBlock(current, variant.expected, variant.replacement);
+    if (fallback !== undefined) {
+      return { content: fallback.content, strategy: "indentation_insensitive" };
+    }
+  }
+
+  throw new Error(`expected text must occur exactly once in ${path}; found 0.`);
+}
+
+function buildTextReplacementFromCandidates(
+  current: string,
+  expected: string,
+  replacements: readonly SandboxTextReplacementCandidate[],
+  path: string,
+): {
+  content: string;
+  strategy: SandboxTextReplacementResult["matchStrategy"];
+  replacementKey?: string | undefined;
+} {
+  const candidates = dedupeReplacementCandidates(replacements);
+  if (candidates.length === 0) throw new Error("replacement text is required.");
+
+  const matches: Array<{
+    content: string;
+    strategy: SandboxTextReplacementResult["matchStrategy"];
+    replacementKey?: string | undefined;
+  }> = [];
+  let firstRecoverableError: Error | undefined;
+  let firstError: Error | undefined;
+
+  for (const candidate of candidates) {
+    try {
+      const planned = buildTextReplacement(current, expected, candidate.text, path);
+      if (planned.content === current) {
+        firstError ??= new Error("replacement text must differ from expected text.");
+        continue;
+      }
+      matches.push({
+        ...planned,
+        replacementKey: candidate.key,
+      });
+    } catch (error) {
+      const err = error instanceof Error ? error : new Error(String(error));
+      firstError ??= err;
+      if (isTextMatchError(err)) firstRecoverableError ??= err;
+    }
+  }
+
+  const distinctMatches = dedupeTextReplacementMatches(matches);
+  if (distinctMatches.length === 1) return distinctMatches[0]!;
+  if (distinctMatches.length > 1) {
+    const keys = distinctMatches.map((match) => match.replacementKey ?? "replacement").join(", ");
+    throw new Error(`Replacement aliases produced multiple valid edits for ${path}: ${keys}.`);
+  }
+  throw firstRecoverableError ?? firstError ?? new Error("replacement text is required.");
+}
+
+function dedupeReplacementCandidates(
+  candidates: readonly SandboxTextReplacementCandidate[],
+): SandboxTextReplacementCandidate[] {
+  const deduped: SandboxTextReplacementCandidate[] = [];
+  for (const candidate of candidates) {
+    if (deduped.some((existing) => existing.text === candidate.text)) continue;
+    deduped.push(candidate);
+  }
+  return deduped;
+}
+
+function dedupeTextReplacementMatches(
+  matches: Array<{
+    content: string;
+    strategy: SandboxTextReplacementResult["matchStrategy"];
+    replacementKey?: string | undefined;
+  }>,
+): Array<{
+  content: string;
+  strategy: SandboxTextReplacementResult["matchStrategy"];
+  replacementKey?: string | undefined;
+}> {
+  const distinct: typeof matches = [];
+  for (const match of matches) {
+    if (distinct.some((existing) => existing.content === match.content)) continue;
+    distinct.push(match);
+  }
+  return distinct;
+}
+
+function isTextMatchError(error: Error): boolean {
+  return /^expected text must occur exactly once in .+; found \d+\.$/.test(error.message);
+}
+
+function buildTextReplacementVariants(
+  current: string,
+  expected: string,
+  replacement: string,
+): Array<{
+  expected: string;
+  replacement: string;
+  strategy: SandboxTextReplacementResult["matchStrategy"];
+}> {
+  const variants: Array<{
+    expected: string;
+    replacement: string;
+    strategy: SandboxTextReplacementResult["matchStrategy"];
+  }> = [];
+  const addVariant = (
+    nextExpected: string,
+    nextReplacement: string,
+    strategy: SandboxTextReplacementResult["matchStrategy"],
+  ) => {
+    if (
+      variants.some(
+        (variant) =>
+          variant.expected === nextExpected &&
+          variant.replacement === nextReplacement &&
+          variant.strategy === strategy,
+      )
+    ) {
+      return;
+    }
+    variants.push({ expected: nextExpected, replacement: nextReplacement, strategy });
+  };
+
+  const decodedExpected = decodeEscapedText(expected);
+  const decodedReplacement = decodeEscapedText(replacement);
+  if (decodedReplacement !== undefined && shouldPreferDecodedReplacement(current, expected, replacement)) {
+    addVariant(expected, decodedReplacement, "escaped_sequences_decoded");
+  }
+  if (decodedExpected !== undefined || decodedReplacement !== undefined) {
+    addVariant(
+      decodedExpected ?? expected,
+      decodedReplacement ?? replacement,
+      "escaped_sequences_decoded",
+    );
+  }
+
+  addVariant(expected, replacement, "exact");
+  for (const transformed of [
+    { values: stripMarkdownFencePair(expected, replacement), strategy: "fenced_code_block" as const },
+    {
+      values: stripNumberedLinePrefixPair(expected, replacement),
+      strategy: "line_number_prefix_stripped" as const,
+    },
+    {
+      values: stripNumberedLinePrefixPair(...stripMarkdownFencePair(expected, replacement)),
+      strategy: "line_number_prefix_stripped" as const,
+    },
+  ]) {
+    const [nextExpected, nextReplacement] = transformed.values;
+    addVariant(nextExpected, nextReplacement, transformed.strategy);
+  }
+
+  const eol = dominantEol(current);
+  for (const variant of [...variants]) {
+    const eolExpected = normalizeLineEndings(variant.expected, eol);
+    const eolReplacement = normalizeLineEndings(variant.replacement, eol);
+    if (eolExpected !== variant.expected || eolReplacement !== variant.replacement) {
+      addVariant(eolExpected, eolReplacement, "line_endings_normalized");
+    }
+  }
+  return variants;
+}
+
+function decodeEscapedText(value: string): string | undefined {
+  if (!hasEscapedLineBreak(value)) return undefined;
+  const decoded = value
+    .replace(/\\r\\n/g, "\n")
+    .replace(/\\n/g, "\n")
+    .replace(/\\r/g, "\n")
+    .replace(/\\t/g, "\t")
+    .replace(/\\"/g, '"')
+    .replace(/\\'/g, "'");
+  return decoded === value ? undefined : decoded;
+}
+
+function hasEscapedLineBreak(value: string): boolean {
+  return /\\(?:r\\n|n|r)/u.test(value);
+}
+
+function shouldPreferDecodedReplacement(current: string, expected: string, replacement: string): boolean {
+  if (!hasEscapedLineBreak(replacement)) return false;
+  if (countOccurrences(current, expected) !== 1) return false;
+  if (/[\r\n]/u.test(replacement)) return false;
+  return /[\r\n]/u.test(expected) || /\\(?:r\\n|n|r)[ \t]*(?:[A-Za-z_$()[\]{}./"'`]|$)/u.test(replacement);
+}
+
+function stripMarkdownFencePair(expected: string, replacement: string): [string, string] {
+  return [stripMarkdownFence(expected), stripMarkdownFence(replacement)];
+}
+
+function stripMarkdownFence(value: string): string {
+  const trimmed = value.trim();
+  const match = /^```[^\r\n]*\r?\n([\s\S]*?)\r?\n```$/u.exec(trimmed);
+  return match?.[1] ?? value;
+}
+
+function stripNumberedLinePrefixPair(expected: string, replacement: string): [string, string] {
+  return [stripNumberedLinePrefixes(expected), stripNumberedLinePrefixes(replacement)];
+}
+
+function stripNumberedLinePrefixes(value: string): string {
+  const lines = splitLogicalLines(value);
+  if (lines.length === 0) return value;
+  const nonBlank = lines.filter((line) => line.text.trim().length > 0);
+  if (nonBlank.length === 0 || !nonBlank.every((line) => /^\s*\d+:\s?/u.test(line.text))) return value;
+  return lines.map((line) => `${line.text.replace(/^\s*\d+:\s?/u, "")}${line.eol}`).join("");
+}
+
+function dominantEol(value: string): "\r\n" | "\n" {
+  const crlf = (value.match(/\r\n/g) ?? []).length;
+  const lf = (value.match(/(?<!\r)\n/g) ?? []).length;
+  return crlf > lf ? "\r\n" : "\n";
+}
+
+function normalizeLineEndings(value: string, eol: "\r\n" | "\n"): string {
+  return value.replace(/\r\n|\r|\n/g, eol);
 }
 
 function countOccurrences(value: string, needle: string): number {
