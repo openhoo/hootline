@@ -118,6 +118,7 @@ export async function main(options) {
   });
 
   let server;
+  let modelEnv = process.env;
   const serverUrl = options.serverUrl ?? (options.dryRun ? undefined : await startBenchmarkServer({
     artifactDir,
     mockModel: options.mockModel,
@@ -127,6 +128,7 @@ export async function main(options) {
     webhookSecret: options.webhookSecret,
   }).then((started) => {
     server = started;
+    modelEnv = started.env;
     return started.url;
   }));
 
@@ -146,6 +148,7 @@ export async function main(options) {
         sample,
         scenario,
         serverUrl,
+        modelEnv,
         simulatorStatePath,
         statePath,
       });
@@ -168,6 +171,7 @@ async function runScenarioSample({
   sample,
   scenario,
   serverUrl,
+  modelEnv,
   simulatorStatePath,
   statePath,
 }) {
@@ -260,6 +264,7 @@ async function runScenarioSample({
   const row = {
     ...buildBenchmarkRow({
       inspector: undefined,
+      modelEnv,
       prChecks,
       repairResult,
       sample,
@@ -455,7 +460,7 @@ async function startBenchmarkServer({
     throw error;
   }
   console.log(`Started simulated benchmark server: ${url}`);
-  return { child, logStream, url };
+  return { child, env, logStream, url };
 }
 
 async function stopBenchmarkServer(server) {

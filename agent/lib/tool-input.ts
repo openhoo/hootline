@@ -57,11 +57,7 @@ export const rerunSchema = {
 
 export const mergeSchema = {
   type: "object",
-  properties: {
-    confirmedSuccessfulPipeline: { type: "boolean", default: false },
-    confirmed_successful_pipeline: { type: "boolean" },
-    confirmed: { type: "boolean" },
-  },
+  properties: {},
   additionalProperties: true,
 } as const;
 

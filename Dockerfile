@@ -2,6 +2,8 @@
 
 ARG NODE_VERSION=24-bookworm-slim
 ARG DOCKER_CLI_VERSION=29.6.1
+ARG DOCKER_CLI_SHA256_AMD64=b0df4a43a98d7ecb708acbdb5a34a3416e13b6e39bcbbdf296f51f0f3442b29f
+ARG DOCKER_CLI_SHA256_ARM64=917a4bb83565bcacb38c430f08daae8b59db3256331ac23f22394f0542509881
 
 FROM node:${NODE_VERSION} AS deps
 WORKDIR /app
@@ -43,6 +45,8 @@ FROM node:${NODE_VERSION} AS runtime
 WORKDIR /app
 
 ARG DOCKER_CLI_VERSION
+ARG DOCKER_CLI_SHA256_AMD64
+ARG DOCKER_CLI_SHA256_ARM64
 ARG TARGETARCH
 
 LABEL org.opencontainers.image.source="https://github.com/openhoo/hootline" \
@@ -60,11 +64,13 @@ ENV NODE_ENV=production \
 RUN apt-get update \
   && apt-get install -y --no-install-recommends ca-certificates curl git openssh-client \
   && case "${TARGETARCH:-amd64}" in \
-      amd64) docker_arch="x86_64" ;; \
-      arm64) docker_arch="aarch64" ;; \
+      amd64) docker_arch="x86_64"; docker_sha256="${DOCKER_CLI_SHA256_AMD64}" ;; \
+      arm64) docker_arch="aarch64"; docker_sha256="${DOCKER_CLI_SHA256_ARM64}" ;; \
       *) echo "Unsupported Docker CLI architecture: ${TARGETARCH}" >&2; exit 1 ;; \
     esac \
+  && test -n "${docker_sha256}" \
   && curl -fsSL "https://download.docker.com/linux/static/stable/${docker_arch}/docker-${DOCKER_CLI_VERSION}.tgz" -o /tmp/docker.tgz \
+  && echo "${docker_sha256}  /tmp/docker.tgz" | sha256sum -c - \
   && tar -xzf /tmp/docker.tgz -C /tmp docker/docker \
   && install -m 0755 /tmp/docker/docker /usr/local/bin/docker \
   && rm -rf /var/lib/apt/lists/* \

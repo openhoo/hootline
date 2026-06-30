@@ -84,9 +84,9 @@ or dependencies from inside a repair turn.
 8. If no code change is appropriate, use `rerun_pipeline` only for clear
    transient runner, network, cache, or dependency-service failures. Otherwise
    call `post_provider_comment` with the blocker and evidence.
-9. Use `merge_change` only when policy mode is `auto_merge` and the tool confirms
-   the recorded change is eligible. Normally successful follow-up webhooks handle
-   auto-merge outside the model loop.
+9. Do not use `merge_change` when policy requires a successful fixer-branch
+   pipeline. Trusted successful follow-up webhooks handle that auto-merge path
+   outside the model loop.
 
 ## Loop boundaries
 

@@ -49,6 +49,7 @@ export function verifyGitLabStandardWebhook(
   timestamp: string,
   receivedSignatures: string,
 ): boolean {
+  if (!/^\d+$/.test(timestamp)) return false;
   const timestampSeconds = Number.parseInt(timestamp, 10);
   if (!Number.isFinite(timestampSeconds)) return false;
   if (Math.abs(Date.now() / 1000 - timestampSeconds) > GITLAB_WEBHOOK_TOLERANCE_SECONDS) return false;

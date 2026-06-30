@@ -55,7 +55,7 @@ export async function dispatchPipelineEvent(
     }
     dlog.info("successful pipeline: queuing auto-merge followup");
     waitUntil(
-      handleSuccessfulPipeline(event, dlog).catch((error: unknown) => {
+      handleSuccessfulPipeline(event, dlog, deliveryKey, gitlabVerification).catch((error: unknown) => {
         logError(dlog, "auto-merge followup failed; pendingAutoMerge restored for retry", error);
       }),
     );
@@ -406,6 +406,8 @@ function shouldReleaseForRetry(observation: RepairSessionObservation): boolean {
 async function handleSuccessfulPipeline(
   event: NormalizedPipelineEvent,
   parentLog: Logger,
+  deliveryKey: string,
+  gitlabVerification?: "standard" | "secret_token",
 ): Promise<void> {
   const config = loadServiceConfig();
   const attempt = findPendingAutoMergeAttempt(config.statePath, {
@@ -420,6 +422,17 @@ async function handleSuccessfulPipeline(
   }
   const policy = attempt.policy;
   if (policy.mode !== "auto_merge" || !policy.autoMerge.requireSuccessfulPipeline) return;
+  if (
+    event.provider === "gitlab" &&
+    gitlabVerification === "secret_token" &&
+    !policy.allowGitlabSecretTokenFallback
+  ) {
+    parentLog.warn(
+      { attemptKey: attempt.key },
+      "gitlab secret-token fallback rejected by pending auto-merge policy",
+    );
+    return;
+  }
   const changeNumber = attempt.changeNumber;
   const branch = attempt.publishedBranch;
   const mlog = parentLog.child({ attemptKey: attempt.key, changeNumber });
@@ -440,6 +453,7 @@ async function handleSuccessfulPipeline(
     mlog.info({ merged: result.merged }, "auto-merge completed");
   } catch (error) {
     await restoreAutoMergeClaim(config.statePath, attempt.key);
+    await releaseDelivery(config.statePath, deliveryKey);
     throw error;
   }
 }

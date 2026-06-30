@@ -7,8 +7,8 @@ import type { SendFn } from "eve/channels";
 
 import { dispatchPipelineEvent } from "../agent/lib/repair-service.ts";
 import { registerProviderClient } from "../agent/lib/providers/index.ts";
-import type { FailureContext, NormalizedPipelineEvent } from "../agent/lib/types.ts";
-import { eventAttemptKey, loadState } from "../agent/lib/state.ts";
+import type { FailureContext, NormalizedPipelineEvent, RepoPolicy } from "../agent/lib/types.ts";
+import { eventAttemptKey, loadState, recordAttempt, updateAttempt } from "../agent/lib/state.ts";
 import type { ProviderClient } from "../agent/lib/providers/common.ts";
 
 test("repair service claims a failed event and records a terminal published session", async () => {
@@ -325,6 +325,144 @@ test("repair service retries retryable provider errors thrown before a session s
   }
 });
 
+test("gitlab secret-token success webhook cannot bypass pending auto-merge policy", async () => {
+  const previousStatePath = process.env.HOOTLINE_STATE_PATH;
+  const root = mkdtempSync(join(tmpdir(), "hootline-repair-service-gitlab-success-"));
+  const statePath = join(root, "state.json");
+  process.env.HOOTLINE_STATE_PATH = statePath;
+  const branch = "hootline/fix/main/fixsha";
+  const commitSha = "fixsha1234567890";
+  const failureEvent = makeEvent({
+    provider: "gitlab",
+    id: "gitlab:owner/repo:2002:abc123def4567890",
+    pipelineId: "2002",
+    runId: undefined,
+    installationId: undefined,
+    eventName: "Pipeline Hook",
+  });
+  const key = eventAttemptKey(failureEvent);
+  recordAttempt(
+    statePath,
+    failureEvent,
+    makePolicy({ provider: "gitlab", mode: "auto_merge", allowGitlabSecretTokenFallback: false }),
+  );
+  updateAttempt(statePath, key, {
+    pendingAutoMerge: true,
+    publishedBranch: branch,
+    changeNumber: 7,
+    lastPublishResult: {
+      provider: "gitlab",
+      mode: "auto_merge",
+      branch,
+      commitSha,
+      changeNumber: 7,
+      message: "Published fix MR !7.",
+    },
+  });
+
+  let mergeCalls = 0;
+  const restoreProvider = registerProviderClient("gitlab", {
+    ...makeProvider(failureEvent),
+    async mergeChange() {
+      mergeCalls += 1;
+      throw new Error("merge must not be called");
+    },
+  });
+  const waitTasks: Promise<unknown>[] = [];
+
+  try {
+    const response = await dispatchPipelineEvent(
+      {
+        ...failureEvent,
+        id: "gitlab:owner/repo:3003:fixsha1234567890",
+        deliveryId: "delivery-success-secret-token",
+        pipelineId: "3003",
+        ref: branch,
+        sha: commitSha,
+        status: "success",
+        conclusion: "success",
+      },
+      (() => {
+        throw new Error("send must not be called for success webhooks");
+      }) as SendFn,
+      (task) => waitTasks.push(task),
+      "secret_token",
+    );
+
+    assert.equal(response.status, 200);
+    await Promise.all(waitTasks);
+    assert.equal(mergeCalls, 0);
+    assert.equal(loadState(statePath).attempts[key]?.pendingAutoMerge, true);
+  } finally {
+    restoreProvider();
+    restoreEnv("HOOTLINE_STATE_PATH", previousStatePath);
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("auto-merge followup failure restores claim and releases success delivery", async () => {
+  const previousStatePath = process.env.HOOTLINE_STATE_PATH;
+  const root = mkdtempSync(join(tmpdir(), "hootline-repair-service-merge-fail-"));
+  const statePath = join(root, "state.json");
+  process.env.HOOTLINE_STATE_PATH = statePath;
+  const branch = "hootline/fix/main/fixsha";
+  const commitSha = "fixsha1234567890";
+  const failureEvent = makeEvent();
+  const key = eventAttemptKey(failureEvent);
+  recordAttempt(statePath, failureEvent, makePolicy({ mode: "auto_merge" }));
+  updateAttempt(statePath, key, {
+    pendingAutoMerge: true,
+    publishedBranch: branch,
+    changeNumber: 42,
+    lastPublishResult: {
+      provider: "github",
+      mode: "auto_merge",
+      branch,
+      commitSha,
+      changeNumber: 42,
+      message: "Published fix PR #42.",
+    },
+  });
+
+  const restoreProvider = registerProviderClient("github", {
+    ...makeProvider(failureEvent),
+    async mergeChange() {
+      throw new Error("temporary merge API outage");
+    },
+  });
+  const waitTasks: Promise<unknown>[] = [];
+
+  try {
+    const response = await dispatchPipelineEvent(
+      {
+        ...failureEvent,
+        id: "github:owner/repo:3003:fixsha1234567890",
+        deliveryId: "delivery-success-merge-fail",
+        pipelineId: "3003",
+        runId: "3003",
+        ref: branch,
+        sha: commitSha,
+        status: "completed",
+        conclusion: "success",
+      },
+      (() => {
+        throw new Error("send must not be called for success webhooks");
+      }) as SendFn,
+      (task) => waitTasks.push(task),
+    );
+
+    assert.equal(response.status, 200);
+    await Promise.all(waitTasks);
+    const state = loadState(statePath);
+    assert.equal(state.attempts[key]?.pendingAutoMerge, true);
+    assert.equal(state.processedDeliveries["github:delivery-success-merge-fail"], undefined);
+  } finally {
+    restoreProvider();
+    restoreEnv("HOOTLINE_STATE_PATH", previousStatePath);
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 function makeProvider(event: NormalizedPipelineEvent): ProviderClient {
   const failureContext: FailureContext = {
     event,
@@ -362,7 +500,7 @@ function makeProvider(event: NormalizedPipelineEvent): ProviderClient {
   };
 }
 
-function makeEvent(): NormalizedPipelineEvent {
+function makeEvent(overrides: Partial<NormalizedPipelineEvent> = {}): NormalizedPipelineEvent {
   return {
     provider: "github",
     id: "github:owner/repo:1001:abc123def456",
@@ -379,6 +517,25 @@ function makeEvent(): NormalizedPipelineEvent {
     conclusion: "failure",
     eventName: "workflow_run",
     receivedAt: "2026-06-30T10:00:00.000Z",
+    ...overrides,
+  };
+}
+
+function makePolicy(overrides: Partial<RepoPolicy> = {}): RepoPolicy {
+  return {
+    provider: "github",
+    slug: "owner/repo",
+    mode: "pr_mr",
+    allowedBranches: ["main"],
+    allowedFileGlobs: ["src/**"],
+    verificationCommands: ["npm test"],
+    sandboxNetworkAllow: [],
+    fixBranchPrefix: "hootline/fix",
+    maxAttemptsPerSha: 2,
+    maxSnapshotBytes: 1024 * 1024,
+    autoMerge: { deleteSourceBranch: false, requireSuccessfulPipeline: true },
+    allowGitlabSecretTokenFallback: false,
+    ...overrides,
   };
 }
 

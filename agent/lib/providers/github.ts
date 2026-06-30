@@ -118,7 +118,7 @@ export class GitHubProvider implements ProviderClient {
   async publishFix(input: PublishInput): Promise<PublishResult> {
     validateChangesAgainstPolicy(input.changes, input.policy);
     const branch = buildFixBranchName(input.policy.fixBranchPrefix, input.event);
-    const baseSha = await this.resolveBaseSha(input.event);
+    const baseSha = input.event.sha;
     await this.ensureBranch(input.event, branch, baseSha);
     const commitSha = await this.createCommit(input.event, branch, baseSha, input.changes, input.summary);
 
@@ -263,16 +263,6 @@ export class GitHubProvider implements ProviderClient {
     );
     if (!response.ok) return `GitHub log fetch failed with HTTP ${response.status}.`;
     return readCappedText(response, MAX_LOG_BYTES);
-  }
-
-  private async resolveBaseSha(event: NormalizedPipelineEvent): Promise<string> {
-    const ref = await this.requestRecord(
-      event,
-      "GET",
-      `/repos/${event.repoSlug}/git/ref/heads/${encodeGitHubRefName(event.ref)}`,
-    ).catch(() => null);
-    const object = isRecord(ref?.object) ? ref.object : undefined;
-    return readString(object?.sha) ?? event.sha;
   }
 
   private async ensureBranch(

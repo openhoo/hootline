@@ -86,7 +86,7 @@ when the image should route to a non-default provider:
 ```sh
 docker build \
   --build-arg HOOTLINE_MODEL_PROVIDER=openai-compatible \
-  --build-arg HOOTLINE_MODEL=cerebras/gemma-4-31b \
+  --build-arg HOOTLINE_MODEL=gemma-4-31b \
   --build-arg HOOTLINE_MODEL_BASE_URL=https://api.cerebras.ai/v1 \
   --build-arg HOOTLINE_MODEL_CONTEXT_WINDOW_TOKENS=65536 \
   --build-arg HOOTLINE_MODEL_PROVIDER_NAME=cerebras \

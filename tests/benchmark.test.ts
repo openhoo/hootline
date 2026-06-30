@@ -336,6 +336,31 @@ test("benchmark rows retain complex scenario metadata", () => {
   assert.deepEqual(row.expectedRepairFiles, ["src/money.js", "src/shipping.js", "src/tax.js"]);
 });
 
+test("benchmark rows record the effective model environment", () => {
+  const scenario = resolveScenario("shipping-threshold-basis");
+  const row = buildBenchmarkRow({
+    inspector: undefined,
+    modelEnv: {
+      HOOTLINE_MODEL_PROVIDER: "mock",
+      HOOTLINE_MODEL: "hootline-simulated-script",
+    },
+    prChecks: undefined,
+    repairResult: { attempt: { attempts: 1 }, redeliveries: 0, status: "terminal_without_publish" },
+    sample: 1,
+    sampleStartedAt: "2026-06-30T10:00:00.000Z",
+    scenario,
+    workflowRun: {
+      conclusion: "failure",
+      databaseId: 123,
+      headSha: "abc123",
+      url: "https://example.test/actions/runs/123",
+    },
+  });
+
+  assert.equal(row.modelProvider, "mock");
+  assert.equal(row.model, "hootline-simulated-script");
+});
+
 test("benchmark summarizer finds latest attempt for a sha", () => {
   const state = {
     attempts: {

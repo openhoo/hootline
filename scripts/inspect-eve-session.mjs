@@ -20,6 +20,7 @@ const SECRET_PATTERNS = [
 ];
 
 const DEFAULT_STATE_PATHS = [
+  "var/hootline-state.json",
   "var/pipeline-fixer-state.json",
   "var/pipeline-fixer-fixture-state.json",
 ];

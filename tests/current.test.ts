@@ -170,7 +170,7 @@ function makePolicy(overrides: Partial<RepoPolicy> = {}): RepoPolicy {
     mode: "pr_mr",
     allowedBranches: ["main"],
     allowedFileGlobs: ["**/*"],
-    verificationCommands: [],
+    verificationCommands: ["npm test"],
     sandboxNetworkAllow: [],
     fixBranchPrefix: "hootline/fix",
     maxAttemptsPerSha: 3,

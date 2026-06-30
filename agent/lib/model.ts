@@ -38,8 +38,10 @@ export function resolvePipelineFixerModel(env: NodeJS.ProcessEnv = process.env) 
 
   if (provider === "anthropic") {
     requireAnyCredential(env, ["HOOTLINE_MODEL_API_KEY", "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN"], provider);
+    const authToken = apiKey === undefined ? readNonEmpty(env.ANTHROPIC_AUTH_TOKEN) : undefined;
     const anthropic = createAnthropic({
       ...(apiKey !== undefined ? { apiKey } : {}),
+      ...(authToken !== undefined ? { authToken } : {}),
       ...(baseURL !== undefined ? { baseURL } : {}),
     });
     return anthropic(normalizeDirectModelId(provider, model));

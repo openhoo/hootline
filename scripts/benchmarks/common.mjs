@@ -3,7 +3,16 @@ import {
   scenarioMutations,
 } from "../fixture-scenarios.mjs";
 
-export function buildBenchmarkRow({ inspector, prChecks, repairResult, sample, sampleStartedAt, scenario, workflowRun }) {
+export function buildBenchmarkRow({
+  inspector,
+  modelEnv = process.env,
+  prChecks,
+  repairResult,
+  sample,
+  sampleStartedAt,
+  scenario,
+  workflowRun,
+}) {
   const attempt = repairResult.attempt;
   const publish = attempt?.lastPublishResult;
   return {
@@ -40,8 +49,8 @@ export function buildBenchmarkRow({ inspector, prChecks, repairResult, sample, s
     inputTokens: attempt?.lastInputTokens,
     outputTokens: attempt?.lastOutputTokens,
     redeliveries: repairResult.redeliveries,
-    modelProvider: process.env.HOOTLINE_MODEL_PROVIDER,
-    model: process.env.HOOTLINE_MODEL,
+    modelProvider: modelEnv.HOOTLINE_MODEL_PROVIDER,
+    model: modelEnv.HOOTLINE_MODEL,
     prNumber: attempt?.changeNumber,
     prUrl: attempt?.changeUrl ?? publish?.changeUrl,
     publishedBranch: attempt?.publishedBranch ?? publish?.branch,

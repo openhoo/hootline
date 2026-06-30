@@ -118,7 +118,6 @@ export class GitLabProvider implements ProviderClient {
   async publishFix(input: PublishInput): Promise<PublishResult> {
     validateChangesAgainstPolicy(input.changes, input.policy);
     const branch = buildFixBranchName(input.policy.fixBranchPrefix, input.event);
-    await this.ensureBranch(input.event, branch, input.event.sha);
     const commit = await this.createCommit(input.event, branch, input.changes, input.summary);
 
     if (input.policy.mode === "push_branch") {
@@ -230,39 +229,13 @@ export class GitLabProvider implements ProviderClient {
     return readCappedText(response, MAX_LOG_BYTES);
   }
 
-  private async ensureBranch(
-    event: NormalizedPipelineEvent,
-    branch: string,
-    ref: string,
-  ): Promise<void> {
-    const exists = await this.request(
-      event,
-      "GET",
-      `/projects/${encodeProject(event)}/repository/branches/${encodeURIComponent(branch)}`,
-    ).then(
-      () => true,
-      () => false,
-    );
-    if (exists) return;
-    await this.request(event, "POST", `/projects/${encodeProject(event)}/repository/branches`, {
-      branch,
-      ref,
-    });
-  }
-
   private async createCommit(
     event: NormalizedPipelineEvent,
     branch: string,
     changes: readonly SandboxChange[],
     summary: string,
   ): Promise<{ id: string }> {
-    const actions = (
-      await Promise.all(
-        changes.map(async (change) =>
-          toGitLabCommitAction(change, await this.fileExistsOnBranch(event, branch, change.path)),
-        ),
-      )
-    ).filter((action): action is GitLabCommitAction => action !== null);
+    const actions = changes.map(toGitLabCommitAction);
     if (actions.length === 0) {
       throw new Error(`No publishable GitLab file actions remain on fixer branch ${branch}.`);
     }
@@ -273,6 +246,8 @@ export class GitLabProvider implements ProviderClient {
       {
         branch,
         commit_message: `Fix failing pipeline\n\n${summary}`,
+        start_sha: event.sha,
+        force: true,
         actions,
       },
     );
@@ -349,25 +324,6 @@ export class GitLabProvider implements ProviderClient {
     body?: unknown,
   ): Promise<unknown[]> {
     return requireArray(await this.request(event, method, path, body), `GitLab ${method} ${path}`);
-  }
-
-  private async fileExistsOnBranch(
-    event: NormalizedPipelineEvent,
-    branch: string,
-    path: string,
-  ): Promise<boolean> {
-    if (path.length === 0) return false;
-    const response = await this.requestRaw(
-      event,
-      "HEAD",
-      `/projects/${encodeProject(event)}/repository/files/${encodeURIComponent(path)}?ref=${encodeURIComponent(
-        branch,
-      )}`,
-    );
-    if (response.status === 404) return false;
-    const parsed = await parseJsonResponse(response);
-    assertResponseOk(response, parsed, `GitLab HEAD repository file ${path}`);
-    return true;
   }
 
   private async requestRaw(
@@ -482,12 +438,12 @@ function isTimeoutError(error: unknown): boolean {
   return error instanceof Error && (error.name === "TimeoutError" || error.name === "AbortError");
 }
 
-function toGitLabCommitAction(change: SandboxChange, fileExists: boolean): GitLabCommitAction | null {
+function toGitLabCommitAction(change: SandboxChange): GitLabCommitAction {
   if (change.status === "deleted") {
-    return fileExists ? { action: "delete", file_path: change.path } : null;
+    return { action: "delete", file_path: change.path };
   }
   return {
-    action: fileExists ? "update" : "create",
+    action: change.status === "added" ? "create" : "update",
     file_path: change.path,
     content: change.contentBase64 ?? "",
     encoding: "base64",

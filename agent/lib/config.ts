@@ -36,6 +36,9 @@ const repoPolicyConfigSchema = repoPolicyFieldsSchema.extend({
 export const repoPolicySchema = repoPolicyFieldsSchema.extend({
   provider: z.enum(["github", "gitlab"]),
   slug: z.string().min(1),
+  allowedBranches: nonEmptyStringArraySchema,
+  allowedFileGlobs: nonEmptyStringArraySchema,
+  verificationCommands: nonEmptyStringArraySchema,
 });
 
 export class RepoPolicyConfigError extends Error {

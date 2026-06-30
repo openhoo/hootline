@@ -1,6 +1,11 @@
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import assert from "node:assert/strict";
 import test from "node:test";
+import * as tar from "tar";
 
+import { extractTarGzToSandbox } from "../agent/lib/archive.ts";
 import {
   assertSandboxSnapshotReady,
   collectSandboxChanges,
@@ -469,12 +474,37 @@ test("snapshot marker ties staged repository to the current attempt and sandbox"
   );
 });
 
+test("archive extraction rejects decompressed payloads before sandbox writes", async () => {
+  const root = mkdtempSync(join(tmpdir(), "hootline-archive-limit-"));
+  const archivePath = join(root, "repo.tar.gz");
+  try {
+    mkdirSync(join(root, "repo", "src"), { recursive: true });
+    writeFileSync(join(root, "repo", "src", "large.txt"), "x".repeat(2048));
+    await tar.c({ cwd: root, file: archivePath, gzip: true }, ["repo"]);
+    const sandbox = new FakeSandbox();
+
+    await assert.rejects(
+      extractTarGzToSandbox({
+        archive: readFileSync(archivePath),
+        sandbox: sandbox as never,
+        targetDir: "repo",
+        maxBytes: 1024,
+      }),
+      /Decompressed repository archive is .* above policy limit 1024/,
+    );
+    assert.equal(sandbox.binaryWrites, 0);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 class FakeSandbox {
   readonly id = "sandbox-1";
   readonly binaryFiles = new Map<string, Uint8Array>();
   readonly textFiles = new Map<string, string>();
   readonly commandResults: Array<{ exitCode: number; stdout: string; stderr: string }> = [];
   readonly networkPolicies: unknown[] = [];
+  binaryWrites = 0;
   statusStdout = "";
   failNetworkPolicyCall: number | undefined;
 
@@ -503,6 +533,11 @@ class FakeSandbox {
 
   async writeTextFile(input: { path: string; content: string }) {
     this.textFiles.set(input.path, input.content);
+  }
+
+  async writeBinaryFile(input: { path: string; content: Uint8Array }) {
+    this.binaryWrites += 1;
+    this.binaryFiles.set(input.path, input.content);
   }
 
   async readTextFile(input: { path: string }) {
@@ -534,7 +569,7 @@ function makePolicy(overrides: Partial<RepoPolicy> = {}): RepoPolicy {
     mode: "pr_mr",
     allowedBranches: ["main"],
     allowedFileGlobs: ["src/**", "docs/**"],
-    verificationCommands: [],
+    verificationCommands: ["npm test"],
     sandboxNetworkAllow: [],
     fixBranchPrefix: "hootline/fix",
     maxAttemptsPerSha: 2,

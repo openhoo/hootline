@@ -3,6 +3,7 @@ import { defineTool } from "eve/tools";
 import { resolveCurrentAttempt } from "../lib/current.ts";
 import { createLogger, logError } from "../lib/logger.ts";
 import { getProviderClient } from "../lib/providers/index.ts";
+import { redact } from "../lib/redact.ts";
 import { clearSessionOutcomePatch, updateAttempt } from "../lib/state.ts";
 import {
   commentSchema,
@@ -26,7 +27,7 @@ export default defineTool({
       // The comment body is model-authored; do not log it.
       await getProviderClient(attempt.event.provider).postComment(
         attempt.event,
-        readRequiredAliasedString(normalizedInput, "body", ["message", "comment", "summary"]),
+        redact(readRequiredAliasedString(normalizedInput, "body", ["message", "comment", "summary"]), 4_000),
       );
       updateAttempt(config.statePath, attempt.key, {
         ...clearSessionOutcomePatch(),

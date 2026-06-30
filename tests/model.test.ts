@@ -23,6 +23,15 @@ test("normalizes legacy prefixed Anthropic model ids for direct provider mode", 
   assert.equal(model.provider, "anthropic.messages");
 });
 
+test("passes Anthropic auth tokens to the provider headers", () => {
+  const model = resolvePipelineFixerModel({
+    HOOTLINE_MODEL_PROVIDER: "anthropic",
+    ANTHROPIC_AUTH_TOKEN: "test-auth-token",
+  }) as { config?: { headers?: () => Record<string, string> } };
+
+  assert.equal(model.config?.headers?.().authorization, "Bearer test-auth-token");
+});
+
 test("resolves direct OpenAI models", () => {
   const model = readModelMetadata(
     resolvePipelineFixerModel({
@@ -56,6 +65,21 @@ test("resolves OpenAI-compatible models with a configured base URL", () => {
     }),
     4096,
   );
+});
+
+test("resolves the documented Cerebras OpenAI-compatible model id without a provider prefix", () => {
+  const model = readModelMetadata(
+    resolvePipelineFixerModel({
+      HOOTLINE_MODEL_PROVIDER: "openai-compatible",
+      HOOTLINE_MODEL: "gemma-4-31b",
+      HOOTLINE_MODEL_BASE_URL: "https://api.cerebras.ai/v1",
+      HOOTLINE_MODEL_CONTEXT_WINDOW_TOKENS: "65536",
+      HOOTLINE_MODEL_PROVIDER_NAME: "cerebras",
+    }),
+  );
+
+  assert.equal(model.modelId, "gemma-4-31b");
+  assert.equal(model.provider, "cerebras.chat");
 });
 
 test("keeps AI Gateway available only as an explicit provider mode", () => {

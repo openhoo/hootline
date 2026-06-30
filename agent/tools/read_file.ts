@@ -1,6 +1,7 @@
 import { defineTool } from "eve/tools";
 import { readFile } from "eve/tools/defaults";
 
+import { resolveStagedAttempt } from "../lib/current.ts";
 import { normalizeWorkspaceRepoPath, resolveSandboxRepoPath } from "../lib/sandbox.ts";
 import { looseObjectSchema, normalizeToolInput, readOptionalAliasedString } from "../lib/tool-input.ts";
 
@@ -17,8 +18,9 @@ export default defineTool({
   description: `${readFile.description ?? ""}\nHootline also accepts repo-relative paths, /workspace/repo paths, and high-confidence small path typos inside the staged repository.`,
   inputSchema: readFileInputSchema,
   async execute(input, ctx) {
-    const sandbox = await ctx.getSandbox();
-    return readFile.execute(await normalizeReadFileInput(input, sandbox), ctx);
+    const normalizedInput = normalizeToolInput(input);
+    const { sandbox } = await resolveStagedAttempt(ctx, normalizedInput);
+    return readFile.execute(await normalizeReadFileInput(normalizedInput, sandbox), ctx);
   },
 });
 

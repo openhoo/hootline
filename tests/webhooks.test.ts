@@ -246,6 +246,22 @@ test("rejects a GitLab Standard Webhook with a stale timestamp beyond the replay
   );
 });
 
+test("rejects a GitLab Standard Webhook timestamp with trailing junk", () => {
+  const body = JSON.stringify({ object_kind: "pipeline", object_attributes: { id: 2002 } });
+  const rawSecret = Buffer.from("standard-webhook-secret").toString("base64");
+  const signingToken = `whsec_${rawSecret}`;
+  const messageId = "msg-1";
+  const timestamp = `${Math.floor(Date.now() / 1000)}junk`;
+  const signature = `v1,${createHmac("sha256", Buffer.from(rawSecret, "base64"))
+    .update(`${messageId}.${timestamp}.${body}`)
+    .digest("base64")}`;
+
+  assert.equal(
+    verifyGitLabStandardWebhook(body, signingToken, messageId, timestamp, signature),
+    false,
+  );
+});
+
 test("verifyGitLabWebhookRequest returns none without standard headers or x-gitlab-token", () => {
   const previousSigningToken = process.env.GITLAB_SIGNING_TOKEN;
   const previousSecretToken = process.env.GITLAB_SECRET_TOKEN;

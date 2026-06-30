@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { execFileSync } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { readFileSync, rmSync } from "node:fs";
 
 const cases = [
   {
@@ -46,6 +46,7 @@ const cases = [
 ];
 
 for (const testCase of cases) {
+  rmSync(".eve/compile", { recursive: true, force: true });
   execFileSync("npm", ["run", "info"], {
     env: { ...process.env, ...testCase.env },
     stdio: "ignore",
@@ -67,6 +68,7 @@ for (const testCase of cases) {
 }
 
 // Leave local Eve artifacts in the normal direct-provider development mode.
+rmSync(".eve/compile", { recursive: true, force: true });
 execFileSync("npm", ["run", "info"], {
   env: {
     ...process.env,

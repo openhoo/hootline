@@ -1,6 +1,7 @@
 import { defineTool } from "eve/tools";
 import { grep } from "eve/tools/defaults";
 
+import { resolveStagedAttempt } from "../lib/current.ts";
 import { normalizeWorkspaceRepoPath, resolveSandboxRepoPath } from "../lib/sandbox.ts";
 import {
   looseObjectSchema,
@@ -27,7 +28,9 @@ export default defineTool({
   description: `${grep.description ?? ""}\nHootline also accepts repo-relative search paths and common aliases like query/search for pattern.`,
   inputSchema: grepInputSchema,
   async execute(input, ctx) {
-    return grep.execute(await normalizeGrepInput(input, await ctx.getSandbox()), ctx);
+    const normalizedInput = normalizeToolInput(input);
+    const { sandbox } = await resolveStagedAttempt(ctx, normalizedInput);
+    return grep.execute(await normalizeGrepInput(normalizedInput, sandbox), ctx);
   },
 });
 
@@ -38,7 +41,7 @@ export async function normalizeGrepInput(
   const normalizedInput = normalizeToolInput(input);
   const pattern = readRequiredAliasedString(normalizedInput, "pattern", ["query", "search"]);
   const rawPath = readOptionalAliasedString(normalizedInput, "path", ["filePath", "file"]);
-  let path = rawPath === undefined ? undefined : normalizeWorkspaceRepoPath(rawPath).path;
+  let path = rawPath === undefined ? "/workspace/repo" : normalizeWorkspaceRepoPath(rawPath).path;
   if (rawPath !== undefined && looksLikeFilePath(rawPath)) {
     const resolved = await resolveSandboxRepoPath(sandbox, rawPath);
     path = normalizeWorkspaceRepoPath(resolved.path).path;

@@ -188,19 +188,16 @@ test("GitHub publish creates base64 blobs instead of UTF-8 tree content", async 
     if (call.path === "/app/installations/123/access_tokens") {
       return jsonResponse({ token: "ghs_installation_secret", expires_at: futureIso() });
     }
-    if (call.path === "/repos/owner/repo/git/ref/heads/main") {
-      return jsonResponse({ object: { sha: "base-sha" } });
-    }
     if (call.path === "/repos/owner/repo/git/ref/heads/hootline/fix/main/abc123def456") {
       return jsonResponse({ message: "Not Found" }, 404);
     }
     if (call.path === "/repos/owner/repo/git/refs") {
       const body = requireRecord(call.body, "GitHub create ref request body");
       assert.equal(body.ref, "refs/heads/hootline/fix/main/abc123def456");
-      assert.equal(body.sha, "base-sha");
+      assert.equal(body.sha, "abc123def4567890");
       return jsonResponse({ ref: body.ref });
     }
-    if (call.path === "/repos/owner/repo/git/commits/base-sha") {
+    if (call.path === "/repos/owner/repo/git/commits/abc123def4567890") {
       return jsonResponse({ tree: { sha: "base-tree-sha" } });
     }
     if (call.path === "/repos/owner/repo/git/blobs") {
@@ -257,22 +254,11 @@ test("GitLab publish updates existing files and creates absent files on a reused
   const fetchMock: typeof fetch = async (input, init = {}) => {
     const call = readCall(input, init);
     calls.push(call);
-    const url = new URL(call.url);
-    if (
-      call.method === "GET" &&
-      call.path === `/api/v4/projects/55/repository/branches/${encodeURIComponent(expectedBranch)}`
-    ) {
-      return jsonResponse({ name: expectedBranch });
-    }
-    if (call.method === "HEAD" && call.path.startsWith("/api/v4/projects/55/repository/files/")) {
-      assert.equal(url.searchParams.get("ref"), expectedBranch);
-      return call.path.includes("src%2Fexisting.bin")
-        ? new Response(null, { status: 200 })
-        : new Response(null, { status: 404 });
-    }
     if (call.method === "POST" && call.path === "/api/v4/projects/55/repository/commits") {
       const body = requireRecord(call.body, "GitLab create commit request body");
       assert.equal(body.branch, expectedBranch);
+      assert.equal(body.start_sha, "fedcba9876543210");
+      assert.equal(body.force, true);
       assert.deepEqual(
         requireArray(body.actions, "GitLab commit actions").map((action) => {
           const record = requireRecord(action, "GitLab commit action");
@@ -284,6 +270,7 @@ test("GitLab publish updates existing files and creates absent files on a reused
         [
           { action: "update", filePath: "src/existing.bin" },
           { action: "create", filePath: "src/new.bin" },
+          { action: "delete", filePath: "src/already-deleted.bin" },
         ],
       );
       return jsonResponse({ id: "commit-sha" });
@@ -313,8 +300,8 @@ test("GitLab publish updates existing files and creates absent files on a reused
         autoMerge: { deleteSourceBranch: false, requireSuccessfulPipeline: true },
       }),
       changes: [
-        { status: "added", path: "src/existing.bin", contentBase64: "ZXhpc3Rpbmc=" },
-        { status: "modified", path: "src/new.bin", contentBase64: "bmV3" },
+        { status: "modified", path: "src/existing.bin", contentBase64: "ZXhpc3Rpbmc=" },
+        { status: "added", path: "src/new.bin", contentBase64: "bmV3" },
         { status: "deleted", path: "src/already-deleted.bin" },
       ],
       summary: "Reuse the fixer branch safely.",
@@ -323,11 +310,7 @@ test("GitLab publish updates existing files and creates absent files on a reused
     assert.equal(result.branch, expectedBranch);
     assert.equal(result.commitSha, "commit-sha");
     assert.equal(result.changeNumber, 7);
-    assert.equal(
-      calls.filter((call) => call.method === "HEAD" && call.path.startsWith("/api/v4/projects/55/repository/files/"))
-        .length,
-      3,
-    );
+    assert.equal(calls.some((call) => call.method === "HEAD"), false);
   } finally {
     globalThis.fetch = previousFetch;
     restoreEnv("GITLAB_TOKEN", previousToken);
