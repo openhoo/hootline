@@ -12,6 +12,7 @@
     "fixture:reset": "node scripts/reset-pipeline-fixture.mjs",
     "github-app:check-installation": "node scripts/github-app-check-installation.mjs",
     "github-app:setup": "node scripts/github-app-manifest-flow.mjs",
+    "session:inspect": "node scripts/inspect-eve-session.mjs",
     "typecheck": "tsc --noEmit",
     "test": "HOOTLINE_LOG_LEVEL=silent tsx --test tests/**/*.test.ts"
   },

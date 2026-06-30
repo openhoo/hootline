@@ -20,6 +20,13 @@ test("redacts GitLab token families (glcbt/glrt/glptt/glsoat/gldeploy)", () => {
   }
 });
 
+test("redacts Cerebras API keys", () => {
+  const secret = "csk-abc123DEF456ghi789";
+  const out = redact(`cerebras key ${secret}`);
+  assert.ok(!out.includes(secret));
+  assert.ok(out.includes("[REDACTED]"));
+});
+
 test("redacts AWS access key ids (AKIA and ASIA)", () => {
   const akia = "AKIAIOSFODNN7EXAMPLE";
   const asia = "ASIAIOSFODNN7EXAMPLE";

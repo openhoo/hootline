@@ -6,7 +6,7 @@ import { resolve } from "node:path";
 const DEFAULTS = {
   baselineRef:
     process.env.HOOTLINE_FIXTURE_BASELINE_REF ??
-    "51548227536681dc832fc83ee091c57c17fff864",
+    "ac0f5f08fbe287e4d012c90bf2b64cd2df5295c6",
   fixturePath:
     process.env.HOOTLINE_FIXTURE_PATH ??
     "../hootline-pipeline-fixture",
@@ -21,10 +21,10 @@ const DEFAULTS = {
     "wakemeup0/hootline-pipeline-fixture",
 };
 
-const GOOD_DISCOUNT_LINE =
-  "  return Math.round(subtotalCents * (1 - discountPercent / 100));";
-const BAD_DISCOUNT_LINE =
-  "  return Math.round(subtotalCents * (1 - discountPercent));";
+const FIXTURE_VERIFY_COMMAND = ["npm", "run", "verify"];
+const SHIPPING_SOURCE_PATH = "src/shipping.js";
+const GOOD_SHIPPING_LINE = "  const shippingBasisCents = merchandiseSubtotalCents;";
+const BAD_SHIPPING_LINE = "  const shippingBasisCents = discountedSubtotalCents;";
 
 const options = parseArgs(process.argv.slice(2));
 
@@ -87,8 +87,8 @@ async function main() {
 
   injectFailure();
   runFixtureTests({ expectSuccess: false });
-  runGit(["add", "src/checkout.js"], { write: true });
-  runGit(["commit", "-m", "Reproduce failing discount pipeline"], { write: true });
+  runGit(["add", SHIPPING_SOURCE_PATH], { write: true });
+  runGit(["commit", "-m", "Reproduce failing shipping pipeline"], { write: true });
   const failingSha = options.dryRun ? "<dry-run>" : readGit(["rev-parse", "HEAD"]).trim();
   runGit(["push", "origin", `${options.mainBranch}:${options.mainBranch}`], { write: true });
 
@@ -116,9 +116,24 @@ function assertBaselineIsRepairable() {
         "Use a policy-backed baseline ref.",
     );
   }
-  const source = readFileSync(`${fixturePath}/src/checkout.js`, "utf8");
-  if (!source.includes(GOOD_DISCOUNT_LINE)) {
-    fail("Baseline src/checkout.js does not contain the expected passing discount line.");
+  const expectedFiles = [
+    "src/catalog.js",
+    "src/orders.js",
+    "src/promotions.js",
+    "src/receipt.js",
+    SHIPPING_SOURCE_PATH,
+    "src/tax.js",
+    "test/order-pricing.test.js",
+  ];
+  for (const file of expectedFiles) {
+    if (!existsSync(`${fixturePath}/${file}`)) {
+      fail(`Baseline ${options.baselineRef} is missing expected fixture file: ${file}`);
+    }
+  }
+
+  const source = readFileSync(`${fixturePath}/${SHIPPING_SOURCE_PATH}`, "utf8");
+  if (!source.includes(GOOD_SHIPPING_LINE)) {
+    fail(`Baseline ${SHIPPING_SOURCE_PATH} does not contain the expected passing shipping line.`);
   }
 }
 
@@ -147,24 +162,28 @@ function deleteRemoteBranches(branches) {
 
 function injectFailure() {
   if (options.dryRun) {
-    console.log(`would replace passing discount line with intentional failure`);
+    console.log("would replace passing shipping policy line with intentional failure");
     return;
   }
-  const sourcePath = `${fixturePath}/src/checkout.js`;
+  const sourcePath = `${fixturePath}/${SHIPPING_SOURCE_PATH}`;
   const source = readFileSync(sourcePath, "utf8");
-  if (!source.includes(GOOD_DISCOUNT_LINE)) {
-    fail("Cannot inject failure: expected passing discount line was not found.");
+  if (!source.includes(GOOD_SHIPPING_LINE)) {
+    fail("Cannot inject failure: expected passing shipping policy line was not found.");
   }
-  writeFileSync(sourcePath, source.replace(GOOD_DISCOUNT_LINE, BAD_DISCOUNT_LINE));
+  writeFileSync(sourcePath, source.replace(GOOD_SHIPPING_LINE, BAD_SHIPPING_LINE));
 }
 
 function runFixtureTests({ expectSuccess }) {
   if (options.dryRun) {
-    console.log(`would run npm test and expect ${expectSuccess ? "success" : "failure"}`);
+    console.log(
+      `would run ${FIXTURE_VERIFY_COMMAND.join(" ")} and expect ${
+        expectSuccess ? "success" : "failure"
+      }`,
+    );
     return;
   }
 
-  const result = spawnSync("npm", ["test"], {
+  const result = spawnSync(FIXTURE_VERIFY_COMMAND[0], FIXTURE_VERIFY_COMMAND.slice(1), {
     cwd: fixturePath,
     encoding: "utf8",
     stdio: "pipe",

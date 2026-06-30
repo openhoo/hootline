@@ -4,6 +4,7 @@ const SECRET_PATTERNS = [
   /(x-gitlab-token:\s*)[^\s"']+/gi,
   /(x-hub-signature-256:\s*sha256=)[a-f0-9]+/gi,
   /("?(?:api[_-]?key|access[_-]?token|refresh[_-]?token|id[_-]?token|token|secret|password)"?\s*[:=]\s*"?)[^"',\s}]+/gi,
+  /csk-[A-Za-z0-9]+/g,
   /gh[opsu]_[A-Za-z0-9_]+/g,
   /ghs_[A-Za-z0-9_]+/g,
   /glpat-[A-Za-z0-9_-]+/g,

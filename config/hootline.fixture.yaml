@@ -5,10 +5,8 @@ allowedBranches:
   - main
 allowedFileGlobs:
   - src/**
-  - test/**
-  - package.json
 verificationCommands:
-  - npm test
+  - npm run verify
 sandboxNetworkAllow: []
 fixBranchPrefix: hootline/fix
 maxAttemptsPerSha: 2

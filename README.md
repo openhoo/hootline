@@ -233,8 +233,9 @@ subscribes to `workflow_run` and `check_suite` events.
 The `wakemeup0/hootline-pipeline-fixture` repo is reset through a destructive,
 repeatable workflow so every end-to-end test starts from the same repairable
 state. The default baseline is commit
-`51548227536681dc832fc83ee091c57c17fff864`, also pushed as tag
-`hootline-fixture-baseline-v1`; it contains passing tests plus `.hootline.yaml`.
+`ac0f5f08fbe287e4d012c90bf2b64cd2df5295c6`, also pushed as tag
+`hootline-fixture-baseline-v2`; it contains a passing commerce pricing app plus
+`.hootline.yaml`.
 
 Preview the reset plan:
 
@@ -253,8 +254,8 @@ The workflow:
 - closes all open PRs in the fixture repo;
 - deletes remote `hootline/fix/*` branches;
 - force-pushes fixture `main` back to the baseline commit;
-- verifies the baseline with `npm test`;
-- changes `src/checkout.js` back to the known discount bug;
+- verifies the baseline with `npm run verify`;
+- changes `src/shipping.js` to the known free-shipping eligibility bug;
 - verifies the bug fails the fixture tests;
 - commits and pushes the fresh failing `main` commit.
 
@@ -343,6 +344,26 @@ value is passed through `agent/lib/redact.ts` before it is written.
 Tests run with `HOOTLINE_LOG_LEVEL=silent` so application logs do not
 interleave with test output.
 
+## Session Inspection
+
+Eve stores local repair session streams under `.workflow-data`. When a repair
+appears quiet, inspect the visible session transcript and tool events:
+
+```sh
+npm run session:inspect -- wrun_01KWBMAS9SGYY60502V4G11CYE
+```
+
+The report includes event counts, tool-call order, step finish reasons, the
+final assistant-message excerpt, and whether Hootline state recorded a staged
+repo, verification, publish, or rerun. Use `--message-chars` to change excerpt
+length or `--json` for machine-readable output.
+
+You can also read the live Eve stream while the dev server is running:
+
+```text
+GET /eve/v1/session/<session-id>/stream
+```
+
 ## Architecture Notes
 
 Eve owns Hootline's durable model loop: sessions, step replay, compaction,
@@ -369,6 +390,7 @@ npm run typecheck
 npm test
 npm run check:model-matrix
 npm run fixture:reset -- --dry-run
+npm run session:inspect -- <session-id>
 npm run github-app:setup -- --help
 ```
 
