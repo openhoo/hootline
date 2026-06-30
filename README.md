@@ -341,10 +341,51 @@ Defaults can be overridden with `HOOTLINE_FIXTURE_REPO`,
 `HOOTLINE_FIXTURE_MAIN_BRANCH`, `HOOTLINE_FIXTURE_FIX_BRANCH_PREFIX`, and
 `HOOTLINE_FIXTURE_SCENARIO`.
 
+## Simulated Benchmark
+
+`benchmark:sim` is the primary benchmark path for agent and harness changes. It
+runs the full Eve repair loop against a simulated GitHub provider, so it does
+not reset a real repository, call `gh`, wait on GitHub Actions, or require a
+public webhook tunnel. The runner materializes a local fixture repo from
+`benchmarks/fixtures/pipeline-repo`, injects the selected scenario, sends a
+signed synthetic `workflow_run` webhook to Hootline, and records the simulated
+PR/check result under `var/simulated-benchmarks/`.
+
+Preview the selected scenarios without starting Hootline:
+
+```sh
+npm run benchmark:sim:dry-run
+```
+
+Run one deterministic smoke sample with Eve's mock model:
+
+```sh
+npm run benchmark:sim -- --mock-model --scenarios shipping-threshold-basis --samples 1
+```
+
+Run the same simulated harness with the configured real model:
+
+```sh
+npm run benchmark:sim -- --scenarios all --samples 1
+```
+
+The runner starts a built local Eve server automatically unless `--server-url`
+is supplied. For auto-started servers it sets
+`HOOTLINE_GITHUB_PROVIDER_BACKEND=simulated`,
+`HOOTLINE_SIMULATOR_STATE_PATH`, `HOOTLINE_STATE_PATH`, and a synthetic
+`GITHUB_WEBHOOK_SECRET` for the child process. When using `--server-url`, start
+the server yourself with matching env values.
+
+Rows preserve the live benchmark fields and add simulated repair file/check
+metadata, including actual changed files, expected-vs-actual repair file match,
+and simulated branch check conclusion.
+
 ## Fixture Benchmark
 
 `fixture:benchmark` runs the repairable fixture scenarios sequentially against a
-live Hootline server and writes local artifacts under `var/fixture-benchmarks/`.
+live GitHub fixture repository and writes local artifacts under
+`var/fixture-benchmarks/`. Use it for occasional provider-level validation after
+the simulated benchmark is healthy.
 Start Hootline with the same state path you pass to the benchmark:
 
 ```sh

@@ -12,6 +12,8 @@
     "check:model-matrix": "node scripts/check-model-matrix.mjs",
     "fixture:benchmark": "node scripts/fixture-benchmark.mjs",
     "fixture:reset": "node scripts/reset-pipeline-fixture.mjs",
+    "benchmark:sim": "node scripts/simulated-benchmark.mjs",
+    "benchmark:sim:dry-run": "node scripts/simulated-benchmark.mjs --dry-run",
     "github-app:check-installation": "node scripts/github-app-check-installation.mjs",
     "github-app:setup": "node scripts/github-app-manifest-flow.mjs",
     "lint": "npm run typecheck && node scripts/lint-repo.mjs",

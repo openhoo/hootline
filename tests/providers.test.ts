@@ -1,11 +1,16 @@
 import { generateKeyPairSync } from "node:crypto";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import assert from "node:assert/strict";
 import test from "node:test";
 
 import { assertResponseOk } from "../agent/lib/providers/common.ts";
 import { GitHubProvider } from "../agent/lib/providers/github.ts";
 import { GitLabProvider } from "../agent/lib/providers/gitlab.ts";
+import { getProviderClient } from "../agent/lib/providers/index.ts";
+import { SimulatedGitHubProvider } from "../agent/lib/providers/simulated-github.ts";
 import type { NormalizedPipelineEvent, PublishInput, RepoPolicy, SandboxChange } from "../agent/lib/types.ts";
 import { requireArray, requireRecord, type UnknownRecord } from "../agent/lib/unknown.ts";
 
@@ -327,6 +332,99 @@ test("GitLab publish updates existing files and creates absent files on a reused
     globalThis.fetch = previousFetch;
     restoreEnv("GITLAB_TOKEN", previousToken);
     restoreEnv("GITLAB_BASE_URL", previousBaseUrl);
+  }
+});
+
+test("provider registry can route GitHub calls to the simulated backend", () => {
+  const previousBackend = process.env.HOOTLINE_GITHUB_PROVIDER_BACKEND;
+  try {
+    process.env.HOOTLINE_GITHUB_PROVIDER_BACKEND = "simulated";
+    assert.equal(getProviderClient("github") instanceof SimulatedGitHubProvider, true);
+
+    process.env.HOOTLINE_GITHUB_PROVIDER_BACKEND = "api";
+    assert.equal(getProviderClient("github") instanceof GitHubProvider, true);
+  } finally {
+    restoreEnv("HOOTLINE_GITHUB_PROVIDER_BACKEND", previousBackend);
+  }
+});
+
+test("simulated GitHub provider reads policy, archives, publishes, and records checks", async () => {
+  const previousStatePath = process.env.HOOTLINE_SIMULATOR_STATE_PATH;
+  const root = mkdtempSync(join(tmpdir(), "hootline-sim-provider-"));
+  const repoRoot = join(root, "repo");
+  const statePath = join(root, "simulator-state.json");
+  const event = { ...makeGitHubEvent(), repoSlug: "owner/simulated", sha: "simulatedsha123" };
+  mkdirSync(join(repoRoot, "src"), { recursive: true });
+  writeFileSync(
+    join(repoRoot, ".hootline.yaml"),
+    [
+      "version: 1",
+      "allowedBranches: [main]",
+      "allowedFileGlobs: [src/**]",
+      "verificationCommands: [node test.js]",
+      "",
+    ].join("\n"),
+  );
+  writeFileSync(join(repoRoot, "package.json"), `{"type":"module"}\n`);
+  writeFileSync(join(repoRoot, "src/value.js"), "export const value = 1;\n");
+  writeFileSync(
+    join(repoRoot, "test.js"),
+    "import { value } from './src/value.js'; if (value !== 2) process.exit(1);\n",
+  );
+  writeFileSync(
+    statePath,
+    `${JSON.stringify(
+      {
+        samples: {
+          "owner/simulated@simulatedsha123": {
+            repoSlug: "owner/simulated",
+            sha: "simulatedsha123",
+            worktreePath: repoRoot,
+            failureContext: { summary: "failed", jobs: [] },
+          },
+        },
+        pullRequests: {},
+        nextPullRequestNumber: 1,
+      },
+      null,
+      2,
+    )}\n`,
+  );
+  process.env.HOOTLINE_SIMULATOR_STATE_PATH = statePath;
+
+  try {
+    const provider = new SimulatedGitHubProvider();
+    assert.match(
+      await provider.readRepositoryFileFromDefaultBranch(event, ".hootline.yaml") ?? "",
+      /version: 1/,
+    );
+    assert.equal((await provider.downloadArchive(event, 1024 * 1024)).byteLength > 0, true);
+
+    const result = await provider.publishFix({
+      event,
+      policy: makePolicy("github", "owner/simulated", "pr_mr", {
+        allowedFileGlobs: ["src/**"],
+        verificationCommands: ["node test.js"],
+      }),
+      changes: [
+        {
+          status: "modified",
+          path: "src/value.js",
+          contentBase64: Buffer.from("export const value = 2;\n").toString("base64"),
+        },
+      ],
+      summary: "Fix simulated value.",
+    });
+
+    assert.equal(result.changeNumber, 1);
+    const state = JSON.parse(readFileSync(statePath, "utf8"));
+    const pr = requireRecord(state.pullRequests["owner/simulated#1"], "simulated pull request");
+    assert.equal(pr.checkConclusion, "success");
+    const firstCheck = requireRecord(requireArray(pr.checks, "simulated checks")[0], "simulated check");
+    assert.equal(firstCheck.conclusion, "SUCCESS");
+  } finally {
+    restoreEnv("HOOTLINE_SIMULATOR_STATE_PATH", previousStatePath);
+    rmSync(root, { recursive: true, force: true });
   }
 });
 

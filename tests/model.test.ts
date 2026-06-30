@@ -69,6 +69,19 @@ test("keeps AI Gateway available only as an explicit provider mode", () => {
   );
 });
 
+test("resolves deterministic mock model without external credentials", () => {
+  const model = readModelMetadata(
+    resolvePipelineFixerModel({
+      HOOTLINE_MODEL_PROVIDER: "mock",
+      HOOTLINE_MODEL: "hootline-test-script",
+    }),
+  );
+
+  assert.equal(model.modelId, "hootline-test-script");
+  assert.equal(model.provider, "hootline.mock");
+  assert.equal(resolvePipelineFixerModelContextWindowTokens({ HOOTLINE_MODEL_PROVIDER: "mock" }), undefined);
+});
+
 test("rejects unsupported and incomplete model provider configuration", () => {
   assert.throws(
     () => resolvePipelineFixerModel({ HOOTLINE_MODEL_PROVIDER: "made-up" }),

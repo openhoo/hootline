@@ -1,5 +1,5 @@
-import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { execFileSync, spawnSync } from "node:child_process";
+import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -105,6 +105,56 @@ test("fixture reset dry-run does not require a live fixture repository", () => {
 
   assert.match(output, /Mode: dry run/);
   assert.match(output, /src\/money.js, src\/shipping.js, src\/tax.js/);
+});
+
+test("simulated benchmark dry-run does not require a server or provider credentials", () => {
+  const scriptPath = fileURLToPath(new URL("../scripts/simulated-benchmark.mjs", import.meta.url));
+  const repoRoot = fileURLToPath(new URL("..", import.meta.url));
+  const output = execFileSync(
+    process.execPath,
+    [
+      scriptPath,
+      "--dry-run",
+      "--scenarios",
+      "checkout-money-shipping-tax-cascade",
+      "--repo",
+      "owner/simulated",
+    ],
+    { cwd: repoRoot, encoding: "utf8" },
+  );
+
+  assert.match(output, /Mode: dry run/);
+  assert.match(output, /checkout-money-shipping-tax-cascade/);
+  assert.match(output, /dry_run: 1/);
+});
+
+test("tracked simulated fixture is green before each scenario mutation and red after it", () => {
+  const templatePath = fileURLToPath(new URL("../benchmarks/fixtures/pipeline-repo", import.meta.url));
+  const tempRoot = mkdtempSync(join(tmpdir(), "hootline-simulated-fixture-"));
+  const childEnv = { ...process.env };
+  delete childEnv.NODE_TEST_CONTEXT;
+  try {
+    for (const scenario of SCENARIOS) {
+      const repoPath = join(tempRoot, scenario.id);
+      cpSync(templatePath, repoPath, { recursive: true });
+      assertScenarioBaseline(repoPath, scenario);
+      assert.equal(spawnSync("npm", ["test"], { cwd: repoPath, env: childEnv, stdio: "pipe" }).status, 0);
+      applyScenarioMutation(repoPath, scenario);
+      const mutated = spawnSync("npm", ["test"], {
+        cwd: repoPath,
+        encoding: "utf8",
+        env: childEnv,
+        stdio: "pipe",
+      });
+      assert.notEqual(
+        mutated.status,
+        0,
+        `${scenario.id} mutation should fail tests.\nstdout:\n${mutated.stdout}\nstderr:\n${mutated.stderr}`,
+      );
+    }
+  } finally {
+    rmSync(tempRoot, { recursive: true, force: true });
+  }
 });
 
 test("benchmark helpers classify attempt and PR check outcomes", () => {
