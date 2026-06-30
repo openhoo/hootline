@@ -9,6 +9,7 @@ import {
   assertScenarioBaseline,
   expectedFixtureFiles,
   resolveScenario,
+  scenarioSourcePaths,
   scenarioIds,
 } from "./fixture-scenarios.mjs";
 
@@ -55,15 +56,18 @@ main().catch((error) => {
 });
 
 async function main() {
-  assertCleanFixtureWorktree();
-
   console.log(`Fixture repo: ${options.repo}`);
   console.log(`Fixture path: ${fixturePath}`);
   console.log(`Baseline ref: ${options.baselineRef}`);
   console.log(`Main branch: ${options.mainBranch}`);
   console.log(`Fix branch prefix: ${options.fixBranchPrefix}`);
   console.log(`Scenario: ${scenario.id} (${scenario.title})`);
-  if (options.dryRun) console.log("Mode: dry run");
+  if (options.dryRun) {
+    printDryRunPlan();
+    return;
+  }
+
+  assertCleanFixtureWorktree();
 
   runGit(["fetch", "origin", "--prune", "--tags"], { write: false });
   const baselineSha = readGit(["rev-parse", `${options.baselineRef}^{commit}`]).trim();
@@ -98,7 +102,7 @@ async function main() {
 
   injectFailure();
   runFixtureTests({ expectSuccess: false });
-  runGit(["add", scenario.sourcePath], { write: true });
+  runGit(["add", ...scenarioSourcePaths(scenario)], { write: true });
   runGit(["commit", "-m", scenario.commitMessage], { write: true });
   const failingSha = options.dryRun ? "<dry-run>" : readGit(["rev-parse", "HEAD"]).trim();
   runGit(["push", "origin", `${options.mainBranch}:${options.mainBranch}`], { write: true });
@@ -106,6 +110,19 @@ async function main() {
   console.log("");
   console.log(`Pushed failing fixture commit: ${failingSha}`);
   console.log(`Actions: https://github.com/${options.repo}/actions`);
+}
+
+function printDryRunPlan() {
+  console.log("Mode: dry run");
+  console.log("");
+  console.log("Planned actions:");
+  console.log("- verify the fixture worktree exists and is clean");
+  console.log("- fetch origin, tags, and the configured baseline ref");
+  console.log("- list and close open fixture pull requests");
+  console.log("- list and delete remote fixture fix branches");
+  console.log("- reset main to the baseline commit and verify the passing baseline");
+  console.log(`- inject fixture scenario ${scenario.id} in ${scenarioSourcePaths(scenario).join(", ")}`);
+  console.log("- verify the scenario fails, then commit and push the failing main commit");
 }
 
 function assertCleanFixtureWorktree() {
@@ -161,7 +178,7 @@ function deleteRemoteBranches(branches) {
 
 function injectFailure() {
   if (options.dryRun) {
-    console.log(`would inject fixture scenario ${scenario.id} in ${scenario.sourcePath}`);
+    console.log(`would inject fixture scenario ${scenario.id} in ${scenarioSourcePaths(scenario).join(", ")}`);
     return;
   }
   applyScenarioMutation(fixturePath, scenario);

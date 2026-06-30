@@ -5,7 +5,12 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
-import { resolveScenarios, scenarioIds } from "./fixture-scenarios.mjs";
+import {
+  resolveScenarios,
+  scenarioExpectedRepairFiles,
+  scenarioIds,
+  scenarioMutations,
+} from "./fixture-scenarios.mjs";
 
 const DEFAULTS = {
   baselineRef:
@@ -116,10 +121,17 @@ async function runScenarioSample({ artifactDir, fixturePath, options, sample, sc
   if (options.dryRun) {
     return {
       scenarioId: scenario.id,
+      scenarioTitle: scenario.title,
+      scenarioComplexity: scenario.complexity,
+      scenarioTags: scenario.tags ?? [],
+      scenarioMutationCount: scenarioMutations(scenario).length,
       sample,
       status: "dry_run",
       startedAt: sampleStartedAt,
       completedAt: new Date().toISOString(),
+      expectedRepairFile: scenario.expectedRepairFile,
+      expectedRepairFiles: scenarioExpectedRepairFiles(scenario),
+      expectedFailure: scenario.expectedFailure,
     };
   }
 
@@ -174,11 +186,15 @@ export function buildBenchmarkRow({ inspector, prChecks, repairResult, sample, s
   return {
     scenarioId: scenario.id,
     scenarioTitle: scenario.title,
+    scenarioComplexity: scenario.complexity,
+    scenarioTags: scenario.tags ?? [],
+    scenarioMutationCount: scenarioMutations(scenario).length,
     sample,
     status: classifyBenchmarkStatus({ attempt, prChecks, repairResult }),
     startedAt: sampleStartedAt,
     completedAt: new Date().toISOString(),
     expectedRepairFile: scenario.expectedRepairFile,
+    expectedRepairFiles: scenarioExpectedRepairFiles(scenario),
     expectedFailure: scenario.expectedFailure,
     failingSha: workflowRun.headSha,
     workflowRunId: workflowRun.databaseId,
@@ -219,9 +235,13 @@ export function classifyBenchmarkStatus({ attempt, prChecks, repairResult }) {
     if (prChecks.conclusion === "failure") return "published_check_failed";
     return "published_check_unknown";
   }
+  if (attempt.lastTerminalAction === "rerun_requested") return "rerun_requested";
+  if (attempt.lastTerminalAction === "comment_posted") return "comment_posted";
+  if (attempt.lastTerminalAction === "merged") return "merged_without_publish_record";
   if (attempt.lastSessionStatus === "failed") return "agent_failed";
   if (attempt.lastSessionStatus === "abandoned") return "agent_abandoned";
   if (attempt.lastSessionStatus === "waiting") return "agent_waiting";
+  if (attempt.lastSessionStatus === "completed") return "agent_completed_without_publish";
   return "incomplete";
 }
 
@@ -384,21 +404,71 @@ export function summarizeStatusCheckRollup(rollup) {
 async function redeliverGitHubWebhook(deliveryId) {
   const appId = readRequiredEnv("GITHUB_APP_ID");
   const privateKey = readRequiredEnv("GITHUB_APP_PRIVATE_KEY").replace(/\\n/g, "\n");
+  const headers = {
+    accept: "application/vnd.github+json",
+    authorization: `Bearer ${createGitHubJwt(appId, privateKey)}`,
+    "x-github-api-version": "2022-11-28",
+  };
+  const redeliveryId = await resolveGitHubDeliveryDatabaseId(deliveryId, headers);
   const response = await fetch(
-    `https://api.github.com/app/hook/deliveries/${encodeURIComponent(deliveryId)}/attempts`,
+    `https://api.github.com/app/hook/deliveries/${encodeURIComponent(redeliveryId)}/attempts`,
     {
       method: "POST",
-      headers: {
-        accept: "application/vnd.github+json",
-        authorization: `Bearer ${createGitHubJwt(appId, privateKey)}`,
-        "x-github-api-version": "2022-11-28",
-      },
+      headers,
     },
   );
   if (response.status !== 202) {
     const body = await response.text();
     throw new Error(`GitHub webhook redelivery failed: HTTP ${response.status} ${body}`);
   }
+}
+
+async function resolveGitHubDeliveryDatabaseId(deliveryId, headers) {
+  if (/^\d+$/.test(deliveryId)) return deliveryId;
+
+  let nextUrl = "https://api.github.com/app/hook/deliveries?per_page=100";
+  for (let page = 1; page <= 5 && nextUrl !== undefined; page += 1) {
+    const response = await fetch(nextUrl, { headers });
+    const body = await response.text();
+    if (!response.ok) {
+      throw new Error(`GitHub webhook delivery lookup failed: HTTP ${response.status} ${body}`);
+    }
+    const resolved = extractGitHubDeliveryDatabaseId(body, deliveryId);
+    if (resolved !== undefined) return resolved;
+    nextUrl = parseNextLink(response.headers.get("link"));
+  }
+
+  throw new Error(`GitHub webhook delivery ${deliveryId} was not found in recent App deliveries.`);
+}
+
+export function extractGitHubDeliveryDatabaseId(deliveriesJson, deliveryGuid) {
+  const safeJson = deliveriesJson.replace(/"id"\s*:\s*(\d{15,})/g, '"id":"$1"');
+  let deliveries;
+  try {
+    deliveries = JSON.parse(safeJson);
+  } catch {
+    return undefined;
+  }
+  if (!Array.isArray(deliveries)) return undefined;
+  for (const delivery of deliveries) {
+    if (!isRecord(delivery) || delivery.guid !== deliveryGuid) continue;
+    if (typeof delivery.id === "string") return delivery.id;
+    if (Number.isSafeInteger(delivery.id)) return String(delivery.id);
+  }
+  return undefined;
+}
+
+function parseNextLink(linkHeader) {
+  if (linkHeader === null || linkHeader.trim() === "") return undefined;
+  for (const part of linkHeader.split(",")) {
+    const match = part.match(/^\s*<([^>]+)>;\s*rel="([^"]+)"\s*$/);
+    if (match?.[2] === "next") return match[1];
+  }
+  return undefined;
+}
+
+function isRecord(value) {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
 async function assertServerReady(serverUrl) {
@@ -424,6 +494,7 @@ function writeArtifacts({ artifactDir, options, rows, scenarios, startedAt }) {
     rows,
     summary: summarizeRows(rows),
   };
+  report.improvementSignals = summarizeImprovementSignals(rows);
   writeFileSync(resolve(artifactDir, "results.json"), `${JSON.stringify(report, null, 2)}\n`);
   writeFileSync(
     resolve(artifactDir, "results.jsonl"),
@@ -454,11 +525,33 @@ function readInspectorReport({ attemptKey, options, sessionId, statePath }) {
 
 export function summarizeRows(rows) {
   const counts = {};
-  for (const row of rows) counts[row.status] = (counts[row.status] ?? 0) + 1;
+  const byComplexity = {};
+  const failureKinds = {};
+  const failedTools = {};
+  for (const row of rows) {
+    counts[row.status] = (counts[row.status] ?? 0) + 1;
+    const complexity = row.scenarioComplexity ?? "unknown";
+    const group = byComplexity[complexity] ?? { total: 0, publishedGreen: 0, counts: {} };
+    group.total += 1;
+    group.counts[row.status] = (group.counts[row.status] ?? 0) + 1;
+    if (row.status === "published_green") group.publishedGreen += 1;
+    byComplexity[complexity] = group;
+    if (row.sessionFailureKind !== undefined) {
+      failureKinds[row.sessionFailureKind] = (failureKinds[row.sessionFailureKind] ?? 0) + 1;
+    }
+    for (const tool of row.failedTools ?? []) {
+      failedTools[tool] = (failedTools[tool] ?? 0) + 1;
+    }
+  }
+  for (const group of Object.values(byComplexity)) {
+    group.publishedGreenRate = group.total === 0 ? 0 : group.publishedGreen / group.total;
+  }
+  const publishedGreen = rows.filter((row) => row.status === "published_green").length;
   return {
     total: rows.length,
     counts,
-    publishedGreen: rows.filter((row) => row.status === "published_green").length,
+    publishedGreen,
+    publishedGreenRate: rows.length === 0 ? 0 : publishedGreen / rows.length,
     averageAttempts:
       rows.length === 0
         ? 0
@@ -467,7 +560,46 @@ export function summarizeRows(rows) {
       rows.length === 0
         ? 0
         : rows.reduce((total, row) => total + (row.continuationsUsed ?? 0), 0) / rows.length,
+    byComplexity,
+    failureKinds,
+    failedTools,
   };
+}
+
+export function summarizeImprovementSignals(rows) {
+  const actionableRows = rows.filter((row) => row.status !== "published_green" && row.status !== "dry_run");
+  if (actionableRows.length === 0) {
+    return ["No non-green benchmark samples were recorded."];
+  }
+
+  const signals = [];
+  const noPublish = actionableRows.filter((row) => !String(row.status).startsWith("published")).length;
+  const checkFailed = actionableRows.filter((row) => row.status === "published_check_failed").length;
+  const complexNonGreen = actionableRows.filter((row) => row.scenarioComplexity === "complex").length;
+  const noTerminalAction = actionableRows.filter(
+    (row) => row.sessionFailureKind === "no_terminal_action" || row.status === "agent_completed_without_publish",
+  ).length;
+  const toolFailures = countValues(actionableRows.flatMap((row) => row.failedTools ?? []));
+
+  if (noPublish > 0) {
+    signals.push(`${noPublish} sample(s) ended without a published fix; inspect final messages and terminal actions first.`);
+  }
+  if (checkFailed > 0) {
+    signals.push(`${checkFailed} published fix sample(s) still had failing PR checks; compare changed files with expected repair files.`);
+  }
+  if (complexNonGreen > 0) {
+    signals.push(`${complexNonGreen} non-green sample(s) were complex scenarios; review multi-file diagnosis and verification coverage.`);
+  }
+  if (noTerminalAction > 0) {
+    signals.push(`${noTerminalAction} sample(s) stopped without a terminal Hootline action; tighten continuation prompts or max continuation policy.`);
+  }
+
+  const topFailedTool = Object.entries(toolFailures).sort((left, right) => right[1] - left[1])[0];
+  if (topFailedTool !== undefined) {
+    signals.push(`Most common failed tool: ${topFailedTool[0]} (${topFailedTool[1]} occurrence(s)).`);
+  }
+
+  return signals;
 }
 
 function renderMarkdownSummary(report) {
@@ -483,19 +615,41 @@ function renderMarkdownSummary(report) {
     "",
     `Total samples: ${report.summary.total}`,
     `Published green: ${report.summary.publishedGreen}`,
+    `Published green rate: ${(report.summary.publishedGreenRate * 100).toFixed(1)}%`,
     `Average attempts: ${report.summary.averageAttempts.toFixed(2)}`,
     `Average continuations: ${report.summary.averageContinuations.toFixed(2)}`,
     "",
+    "## By Complexity",
+    "",
+    "| Complexity | Samples | Published Green | Green Rate |",
+    "| --- | ---: | ---: | ---: |",
+    ...Object.entries(report.summary.byComplexity).map(
+      ([complexity, group]) =>
+        `| ${markdownCell(complexity)} | ${group.total} | ${group.publishedGreen} | ${(
+          group.publishedGreenRate * 100
+        ).toFixed(1)}% |`,
+    ),
+    "",
+    "## Areas To Improve",
+    "",
+    ...report.improvementSignals.map((signal) => `- ${signal}`),
+    "",
     "## Samples",
     "",
-    "| Scenario | Sample | Status | Attempts | Continuations | PR | Session |",
-    "| --- | ---: | --- | ---: | ---: | --- | --- |",
+    "| Scenario | Complexity | Mutations | Expected Files | Sample | Status | Checks | Attempts | Continuations | Failed Tools | PR | Session |",
+    "| --- | --- | ---: | --- | ---: | --- | --- | ---: | ---: | --- | --- | --- |",
   ];
   for (const row of report.rows) {
     lines.push(
-      `| ${row.scenarioId} | ${row.sample} | ${row.status} | ${row.attemptCount ?? 0} | ${
+      `| ${markdownCell(row.scenarioId)} | ${markdownCell(row.scenarioComplexity ?? "")} | ${
+        row.scenarioMutationCount ?? 1
+      } | ${markdownCell((row.expectedRepairFiles ?? []).join(", "))} | ${row.sample} | ${markdownCell(
+        row.status,
+      )} | ${markdownCell(row.prCheckConclusion ?? "")} | ${row.attemptCount ?? 0} | ${
         row.continuationsUsed ?? 0
-      } | ${row.prUrl ?? ""} | ${row.sessionId ?? ""} |`,
+      } | ${markdownCell((row.failedTools ?? []).join(", "))} | ${markdownCell(row.prUrl ?? "")} | ${markdownCell(
+        row.sessionId ?? "",
+      )} |`,
     );
   }
   lines.push("");
@@ -509,6 +663,13 @@ function printSummary(rows, artifactDir, dryRun) {
   console.log(`- total samples: ${summary.total}`);
   for (const [status, count] of Object.entries(summary.counts)) {
     console.log(`- ${status}: ${count}`);
+  }
+  console.log(`- published green rate: ${(summary.publishedGreenRate * 100).toFixed(1)}%`);
+  for (const [complexity, group] of Object.entries(summary.byComplexity)) {
+    console.log(`- ${complexity}: ${group.publishedGreen}/${group.total} published green`);
+  }
+  for (const signal of summarizeImprovementSignals(rows)) {
+    console.log(`- signal: ${signal}`);
   }
   if (!dryRun) console.log(`Artifacts: ${artifactDir}`);
 }
@@ -669,6 +830,16 @@ function readInteger(value, label) {
 function shellQuote(value) {
   if (/^[A-Za-z0-9_./:@%+=,-]+$/.test(value)) return value;
   return `'${String(value).replaceAll("'", "'\\''")}'`;
+}
+
+function countValues(values) {
+  const counts = {};
+  for (const value of values) counts[value] = (counts[value] ?? 0) + 1;
+  return counts;
+}
+
+function markdownCell(value) {
+  return String(value).replace(/\r?\n/g, " ").replaceAll("|", "\\|");
 }
 
 function printHelp() {

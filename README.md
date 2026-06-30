@@ -331,7 +331,8 @@ The workflow:
 - deletes remote `hootline/fix/*` branches;
 - force-pushes fixture `main` back to the baseline commit;
 - verifies the baseline with `npm run verify`;
-- injects one private scenario mutation from `scripts/fixture-scenarios.mjs`;
+- injects one private scenario from `scripts/fixture-scenarios.mjs`, which may
+  mutate one or more source files;
 - verifies the scenario fails the fixture tests;
 - commits and pushes the fresh failing `main` commit.
 
@@ -360,14 +361,28 @@ In another shell with the same GitHub App env loaded:
 ```sh
 npm run fixture:benchmark -- --dry-run
 npm run fixture:benchmark -- --scenarios all --samples 1 --state-path var/fixture-benchmark-state.json --yes
+npm run fixture:benchmark -- --scenarios checkout-money-shipping-tax-cascade --samples 3 --state-path var/fixture-benchmark-state.json --yes
 ```
+
+Dry runs enumerate every selected scenario and reset step without contacting
+GitHub or requiring a fixture checkout. Live `--yes` runs require the GitHub App
+webhook to point at the running Hootline server, usually through the quick
+tunnel below.
 
 The benchmark waits for the pushed fixture workflow to fail, waits for Hootline
 to publish or terminate the repair attempt, waits for fixer PR checks when a PR
 is opened, and records attempt count, tool sequence, failed tools, continuation
-count, token usage, terminal action, PR URL, and PR check result. If a repair
-attempt terminates without publishing and policy still allows another attempt,
-the runner asks GitHub to redeliver the App webhook once more.
+count, token usage, terminal action, PR URL, PR check result, scenario
+complexity, scenario tags, mutation count, the expected repair file set, and
+non-green improvement signals. If a repair attempt terminates without publishing
+and policy still allows another attempt, the runner asks GitHub to redeliver the
+App webhook once more.
+
+Scenario ids are listed by `npm run fixture:benchmark -- --help`. The catalog
+includes single-module regressions for shipping, promotion normalization, tax,
+catalog, money, and receipt behavior, plus multi-file cascade scenarios that
+force the repair agent to reconcile several failing business rules before
+publishing.
 
 ### Cloudflare Quick Tunnel
 
