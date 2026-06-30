@@ -64,6 +64,7 @@ export type AttemptPatch = Partial<
     | "lastOutputTokens"
     | "lastEventsSeen"
     | "continuationsUsed"
+    | "providerErrorRetriesUsed"
     | "repoStagedAt"
     | "repoStagedFiles"
     | "repoStagedBytes"
@@ -185,6 +186,7 @@ const attemptRecordSchema = z
     lastOutputTokens: z.number().int().nonnegative().optional(),
     lastEventsSeen: z.number().int().nonnegative().optional(),
     continuationsUsed: z.number().int().nonnegative().optional(),
+    providerErrorRetriesUsed: z.number().int().nonnegative().optional(),
     repoStagedAt: z.string().optional(),
     repoStagedFiles: z.number().int().nonnegative().optional(),
     repoStagedBytes: z.number().int().nonnegative().optional(),

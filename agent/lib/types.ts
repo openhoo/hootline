@@ -25,6 +25,9 @@ export interface RepoPolicy {
 export interface HootlineServiceConfig {
   statePath: string;
   repoConfigPath: string;
+  providerErrorRetries: number;
+  providerErrorRetryBaseMs: number;
+  providerErrorRetryMaxMs: number;
 }
 
 export interface NormalizedPipelineEvent {
@@ -142,6 +145,7 @@ export interface AttemptRecord {
   lastOutputTokens?: number | undefined;
   lastEventsSeen?: number | undefined;
   continuationsUsed?: number | undefined;
+  providerErrorRetriesUsed?: number | undefined;
   repoStagedAt?: string | undefined;
   repoStagedFiles?: number | undefined;
   repoStagedBytes?: number | undefined;

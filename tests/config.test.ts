@@ -11,17 +11,34 @@ test("loads Hootline service config from HOOTLINE_* env with defaults", () => {
   assert.deepEqual(loadServiceConfig({}), {
     statePath: "var/hootline-state.json",
     repoConfigPath: ".hootline.yaml",
+    providerErrorRetries: 2,
+    providerErrorRetryBaseMs: 1000,
+    providerErrorRetryMaxMs: 15000,
   });
 
   assert.deepEqual(
     loadServiceConfig({
       HOOTLINE_STATE_PATH: "var/custom-state.json",
       HOOTLINE_REPO_CONFIG_PATH: ".config/hootline.yaml",
+      HOOTLINE_PROVIDER_ERROR_RETRIES: "4",
+      HOOTLINE_PROVIDER_ERROR_RETRY_BASE_MS: "250",
+      HOOTLINE_PROVIDER_ERROR_RETRY_MAX_MS: "5000",
     }),
     {
       statePath: "var/custom-state.json",
       repoConfigPath: ".config/hootline.yaml",
+      providerErrorRetries: 4,
+      providerErrorRetryBaseMs: 250,
+      providerErrorRetryMaxMs: 5000,
     },
+  );
+  assert.throws(
+    () =>
+      loadServiceConfig({
+        HOOTLINE_PROVIDER_ERROR_RETRY_BASE_MS: "1000",
+        HOOTLINE_PROVIDER_ERROR_RETRY_MAX_MS: "500",
+      }),
+    /HOOTLINE_PROVIDER_ERROR_RETRY_MAX_MS/,
   );
 });
 

@@ -46,9 +46,31 @@ export class RepoPolicyConfigError extends Error {
 }
 
 export function loadServiceConfig(env: NodeJS.ProcessEnv = process.env): HootlineServiceConfig {
+  const providerErrorRetryBaseMs = readIntegerInRange(
+    env.HOOTLINE_PROVIDER_ERROR_RETRY_BASE_MS,
+    "HOOTLINE_PROVIDER_ERROR_RETRY_BASE_MS",
+    { defaultValue: 1_000, min: 0, max: 60_000 },
+  );
+  const providerErrorRetryMaxMs = readIntegerInRange(
+    env.HOOTLINE_PROVIDER_ERROR_RETRY_MAX_MS,
+    "HOOTLINE_PROVIDER_ERROR_RETRY_MAX_MS",
+    { defaultValue: 15_000, min: 0, max: 300_000 },
+  );
+  if (providerErrorRetryMaxMs < providerErrorRetryBaseMs) {
+    throw new Error(
+      "HOOTLINE_PROVIDER_ERROR_RETRY_MAX_MS must be greater than or equal to HOOTLINE_PROVIDER_ERROR_RETRY_BASE_MS.",
+    );
+  }
   return {
     statePath: readNonEmpty(env.HOOTLINE_STATE_PATH) ?? "var/hootline-state.json",
     repoConfigPath: readNonEmpty(env.HOOTLINE_REPO_CONFIG_PATH) ?? ".hootline.yaml",
+    providerErrorRetries: readIntegerInRange(
+      env.HOOTLINE_PROVIDER_ERROR_RETRIES,
+      "HOOTLINE_PROVIDER_ERROR_RETRIES",
+      { defaultValue: 2, min: 0, max: 10 },
+    ),
+    providerErrorRetryBaseMs,
+    providerErrorRetryMaxMs,
   };
 }
 
@@ -89,4 +111,21 @@ export function parseRepoPolicyConfig(
 function readNonEmpty(value: string | undefined): string | undefined {
   const trimmed = value?.trim();
   return trimmed === "" ? undefined : trimmed;
+}
+
+function readIntegerInRange(
+  value: string | undefined,
+  name: string,
+  options: { defaultValue: number; min: number; max: number },
+): number {
+  const trimmed = readNonEmpty(value);
+  if (trimmed === undefined) return options.defaultValue;
+  if (!/^\d+$/.test(trimmed)) {
+    throw new Error(`${name} must be an integer between ${options.min} and ${options.max}.`);
+  }
+  const parsed = Number(trimmed);
+  if (!Number.isSafeInteger(parsed) || parsed < options.min || parsed > options.max) {
+    throw new Error(`${name} must be an integer between ${options.min} and ${options.max}.`);
+  }
+  return parsed;
 }

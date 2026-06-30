@@ -127,7 +127,8 @@ export async function dispatchPipelineEvent(
       event,
       policy: attempt.policy,
       attemptKey: attempt.key,
-      continuationToken,
+      repairAttempt: attempt.attempts,
+      initialContinuationToken: continuationToken,
       deliveryKey,
       send,
     }).catch((error: unknown) => {
@@ -142,7 +143,8 @@ async function startRepairSession(input: {
   event: NormalizedPipelineEvent;
   policy: RepoPolicy;
   attemptKey: string;
-  continuationToken: string;
+  repairAttempt: number;
+  initialContinuationToken: string;
   deliveryKey: string;
   send: SendFn;
 }): Promise<void> {
@@ -157,36 +159,124 @@ async function startRepairSession(input: {
     const failureContext = await loadFailureContext(input.event, slog);
     updateAttempt(config.statePath, input.attemptKey, { lastFailureContext: failureContext });
     const auth = buildRepairAuth(input.event, input.attemptKey);
-    const session = await input.send(
-      {
-        message: buildPrompt(input.policy.mode),
-        context: buildSeedContext(input.event, input.policy, input.attemptKey, failureContext),
-      },
-      {
+    let providerErrorRetriesUsed = 0;
+    let previousFailure: RepairSessionObservation | undefined;
+    for (;;) {
+      const continuationToken =
+        providerErrorRetriesUsed === 0
+          ? input.initialContinuationToken
+          : repairContinuationToken(input.event, input.repairAttempt, providerErrorRetriesUsed);
+      let session: StreamSession;
+      try {
+        session = await input.send(
+          {
+            message: buildPrompt(input.policy.mode, providerErrorRetriesUsed),
+            context: buildSeedContext(
+              input.event,
+              input.policy,
+              input.attemptKey,
+              failureContext,
+              previousFailure,
+            ),
+          },
+          {
+            auth,
+            continuationToken,
+          },
+        );
+      } catch (error) {
+        const observation = providerErrorObservationFromError(error);
+        if (!shouldRetryProviderError(observation, providerErrorRetriesUsed, config.providerErrorRetries)) {
+          updateAttempt(config.statePath, input.attemptKey, {
+            lastSessionStatus: "failed",
+            lastSessionFailureKind: observation.failureKind,
+            lastSessionFailure: observation.failureMessage,
+            providerErrorRetriesUsed,
+          });
+          throw error;
+        }
+        providerErrorRetriesUsed += 1;
+        previousFailure = observation;
+        await prepareProviderErrorRetry({
+          config,
+          attemptKey: input.attemptKey,
+          observation,
+          providerErrorRetriesUsed,
+          slog,
+        });
+        continue;
+      }
+      updateAttempt(config.statePath, input.attemptKey, {
+        lastSessionId: session.id,
+        lastSessionStatus: "running",
+        providerErrorRetriesUsed,
+      });
+      slog.info(
+        { sessionId: session.id, providerErrorRetriesUsed },
+        "repair session seeded; model turn started",
+      );
+      const observation = await monitorRepairLoop({
         auth,
-        continuationToken: input.continuationToken,
-      },
-    );
-    updateAttempt(config.statePath, input.attemptKey, {
-      lastSessionId: session.id,
-      lastSessionStatus: "running",
-    });
-    slog.info({ sessionId: session.id }, "repair session seeded; model turn started");
-    await monitorRepairLoop({
-      auth,
-      config,
-      deliveryKey: input.deliveryKey,
-      initialContinuationToken: input.continuationToken,
-      send: input.send,
-      session,
-      slog,
-      attemptKey: input.attemptKey,
-    });
+        config,
+        deliveryKey: input.deliveryKey,
+        initialContinuationToken: continuationToken,
+        send: input.send,
+        session,
+        slog,
+        attemptKey: input.attemptKey,
+      });
+      if (!shouldRetryProviderError(observation, providerErrorRetriesUsed, config.providerErrorRetries)) {
+        await releaseForExternalRetryIfNeeded({
+          config,
+          attemptKey: input.attemptKey,
+          deliveryKey: input.deliveryKey,
+          observation,
+          slog,
+        });
+        return;
+      }
+
+      providerErrorRetriesUsed += 1;
+      previousFailure = observation;
+      await prepareProviderErrorRetry({
+        config,
+        attemptKey: input.attemptKey,
+        observation,
+        providerErrorRetriesUsed,
+        slog,
+      });
+    }
   } catch (error) {
     updateAttempt(config.statePath, input.attemptKey, { dispatchedAt: undefined });
     await releaseDelivery(config.statePath, input.deliveryKey);
     throw error;
   }
+}
+
+async function prepareProviderErrorRetry(input: {
+  config: ReturnType<typeof loadServiceConfig>;
+  attemptKey: string;
+  observation: RepairSessionObservation;
+  providerErrorRetriesUsed: number;
+  slog: Logger;
+}): Promise<void> {
+  const delayMs = providerErrorRetryDelayMs(input.config, input.providerErrorRetriesUsed);
+  updateAttempt(input.config.statePath, input.attemptKey, {
+    lastSessionStatus: "running",
+    lastSessionFailureKind: input.observation.failureKind,
+    lastSessionFailure: formatRetryStatusMessage(input.observation, input.providerErrorRetriesUsed, delayMs),
+    providerErrorRetriesUsed: input.providerErrorRetriesUsed,
+  });
+  input.slog.warn(
+    {
+      failureKind: input.observation.failureKind,
+      providerErrorRetriesUsed: input.providerErrorRetriesUsed,
+      delayMs,
+      maxProviderErrorRetries: input.config.providerErrorRetries,
+    },
+    "retrying repair session after retryable provider error",
+  );
+  await sleep(delayMs);
 }
 
 async function monitorRepairLoop(input: {
@@ -198,7 +288,7 @@ async function monitorRepairLoop(input: {
   session: StreamSession;
   slog: Logger;
   attemptKey: string;
-}): Promise<void> {
+}): Promise<RepairSessionObservation> {
   let session = input.session;
   let continuationToken = input.initialContinuationToken;
   let continuationsUsed = 0;
@@ -219,18 +309,7 @@ async function monitorRepairLoop(input: {
     );
 
     if (!shouldSendRepairContinuation(observation, continuationsUsed, MAX_REPAIR_CONTINUATIONS)) {
-      if (shouldReleaseForRetry(observation)) {
-        updateAttempt(input.config.statePath, input.attemptKey, {
-          dispatchedAt: undefined,
-          lastSessionStatus: observation.status === "failed" ? "failed" : "abandoned",
-          lastSessionFailureKind: observation.failureKind ?? "no_terminal_action",
-          lastSessionFailure:
-            observation.failureMessage ?? "Repair session ended without a terminal Hootline action.",
-        });
-        await releaseDelivery(input.config.statePath, input.deliveryKey);
-        input.slog.info("repair session did not complete; delivery released for provider redelivery retry");
-      }
-      return;
+      return observation;
     }
 
     continuationsUsed += 1;
@@ -267,6 +346,25 @@ async function monitorRepairLoop(input: {
       lastSessionStatus: "running",
     });
   }
+}
+
+async function releaseForExternalRetryIfNeeded(input: {
+  config: ReturnType<typeof loadServiceConfig>;
+  attemptKey: string;
+  deliveryKey: string;
+  observation: RepairSessionObservation;
+  slog: Logger;
+}): Promise<void> {
+  if (!shouldReleaseForRetry(input.observation)) return;
+  updateAttempt(input.config.statePath, input.attemptKey, {
+    dispatchedAt: undefined,
+    lastSessionStatus: input.observation.status === "failed" ? "failed" : "abandoned",
+    lastSessionFailureKind: input.observation.failureKind ?? "no_terminal_action",
+    lastSessionFailure:
+      input.observation.failureMessage ?? "Repair session ended without a terminal Hootline action.",
+  });
+  await releaseDelivery(input.config.statePath, input.deliveryKey);
+  input.slog.info("repair session did not complete; delivery released for provider redelivery retry");
 }
 
 function recordSessionObservation(
@@ -352,14 +450,23 @@ async function loadFailureContext(
   }
 }
 
-function buildPrompt(mode: string): string {
-  return [
+function buildPrompt(mode: string, providerErrorRetriesUsed = 0): string {
+  const lines = [
     "Repair the failed CI pipeline using the seeded event, policy, and failure context.",
     "",
     `Configured publish mode: ${mode}`,
     "",
     "Start by staging the repository snapshot, then inspect source files and make the smallest safe fix.",
-  ].join("\n");
+  ];
+  if (providerErrorRetriesUsed > 0) {
+    lines.push(
+      "",
+      `This is automatic provider-error retry ${providerErrorRetriesUsed}.`,
+      "A prior Eve session failed because the model provider API failed before a terminal Hootline action completed.",
+      "Do not wait for provider redelivery. Restage the repository, reapply the smallest safe fix, run checks, then call publish_fix if checks pass.",
+    );
+  }
+  return lines.join("\n");
 }
 
 function buildContinuationPrompt(observation: RepairSessionObservation): string {
@@ -392,8 +499,13 @@ function buildRepairAuth(event: NormalizedPipelineEvent, attemptKey: string): No
   };
 }
 
-function repairContinuationToken(event: NormalizedPipelineEvent, attempt: number): string {
-  return `${eventAttemptKey(event)}:attempt-${attempt}`;
+function repairContinuationToken(
+  event: NormalizedPipelineEvent,
+  attempt: number,
+  providerErrorRetry = 0,
+): string {
+  const base = `${eventAttemptKey(event)}:attempt-${attempt}`;
+  return providerErrorRetry === 0 ? base : `${base}:provider-error-retry-${providerErrorRetry}`;
 }
 
 function buildSeedContext(
@@ -401,8 +513,9 @@ function buildSeedContext(
   policy: RepoPolicy,
   attemptKey: string,
   failureContext: FailureContext | { error: string },
+  previousFailure?: RepairSessionObservation | undefined,
 ): string[] {
-  return [
+  const context = [
     toContextBlock("Hootline state", { attemptKey }),
     toContextBlock("Normalized pipeline event", event),
     toContextBlock("Repository policy", {
@@ -416,6 +529,105 @@ function buildSeedContext(
     }),
     toContextBlock("Initial failure context collected by trusted runtime code", failureContext),
   ];
+  if (previousFailure !== undefined) {
+    context.push(
+      toContextBlock("Previous retryable provider failure", {
+        status: previousFailure.status,
+        finishReason: previousFailure.finishReason,
+        failureKind: previousFailure.failureKind,
+        failureMessage: previousFailure.failureMessage,
+        toolSequence: previousFailure.toolSequence,
+        failedTools: previousFailure.failedTools,
+        terminalAction: previousFailure.terminalAction,
+        eventsSeen: previousFailure.eventsSeen,
+      }),
+    );
+  }
+  return context;
+}
+
+function shouldRetryProviderError(
+  observation: RepairSessionObservation,
+  providerErrorRetriesUsed: number,
+  maxProviderErrorRetries: number,
+): boolean {
+  return (
+    observation.status === "failed" &&
+    observation.failureKind === "provider_error" &&
+    observation.terminalAction === undefined &&
+    providerErrorRetriesUsed < maxProviderErrorRetries &&
+    isRetryableProviderErrorMessage(observation.failureMessage)
+  );
+}
+
+function providerErrorObservationFromError(error: unknown): RepairSessionObservation {
+  return {
+    status: "failed",
+    failureKind: "provider_error",
+    failureMessage: error instanceof Error ? error.message : String(error),
+    eventsSeen: 0,
+    toolSequence: [],
+    failedTools: [],
+    humanInputRequested: false,
+  };
+}
+
+function isRetryableProviderErrorMessage(message: string | undefined): boolean {
+  if (message === undefined) return true;
+  const normalized = message.toLowerCase();
+  if (
+    /\b(401|403)\b/.test(normalized) ||
+    normalized.includes("invalid api key") ||
+    normalized.includes("api key is invalid") ||
+    normalized.includes("authentication") ||
+    normalized.includes("unauthorized") ||
+    normalized.includes("permission denied")
+  ) {
+    return false;
+  }
+  return (
+    normalized.includes("ai_apicallerror") ||
+    normalized.includes("ai_retryerror") ||
+    normalized.includes("api call") ||
+    normalized.includes("rate limit") ||
+    normalized.includes("429") ||
+    normalized.includes("timeout") ||
+    normalized.includes("timed out") ||
+    normalized.includes("econnreset") ||
+    normalized.includes("etimedout") ||
+    normalized.includes("fetch failed") ||
+    normalized.includes("network") ||
+    normalized.includes("overloaded") ||
+    normalized.includes("temporarily unavailable") ||
+    normalized.includes("service unavailable") ||
+    normalized.includes("internal server error") ||
+    /\b5\d\d\b/.test(normalized)
+  );
+}
+
+function providerErrorRetryDelayMs(
+  config: ReturnType<typeof loadServiceConfig>,
+  providerErrorRetriesUsed: number,
+): number {
+  if (config.providerErrorRetryBaseMs === 0) return 0;
+  const exponential = config.providerErrorRetryBaseMs * 2 ** Math.max(0, providerErrorRetriesUsed - 1);
+  const capped = Math.min(exponential, config.providerErrorRetryMaxMs);
+  const jitter = 0.8 + Math.random() * 0.4;
+  return Math.min(config.providerErrorRetryMaxMs, Math.max(0, Math.round(capped * jitter)));
+}
+
+function formatRetryStatusMessage(
+  observation: RepairSessionObservation,
+  providerErrorRetriesUsed: number,
+  delayMs: number,
+): string {
+  const message = observation.failureMessage ?? "The model provider API failed.";
+  return `Retrying after provider error (${providerErrorRetriesUsed}) in ${delayMs}ms: ${message}`;
+}
+
+function sleep(ms: number): Promise<void> {
+  if (ms <= 0) return Promise.resolve();
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 type RepoPolicyResolution =

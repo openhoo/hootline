@@ -250,6 +250,18 @@ race delivery dedupe, repair-slot claims, and auto-merge claims. Use one
 container/replica per state file unless the state backend is replaced with a
 durable cross-process lock.
 
+Model/provider API failures are retried inside the same repair slot before
+Hootline falls back to provider redelivery. Configure this with:
+
+- `HOOTLINE_PROVIDER_ERROR_RETRIES`: retryable provider-error sessions to start
+  after the initial Eve session fails. Default `2`.
+- `HOOTLINE_PROVIDER_ERROR_RETRY_BASE_MS`: exponential backoff base delay.
+  Default `1000`.
+- `HOOTLINE_PROVIDER_ERROR_RETRY_MAX_MS`: backoff cap. Default `15000`.
+
+These retries do not increment repository `maxAttemptsPerSha`; that policy still
+limits provider webhook repair attempts.
+
 ## GitHub App Setup
 
 Hootline uses a GitHub App for webhook verification, archive reads, job log

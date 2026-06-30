@@ -564,6 +564,7 @@ function renderMarkdownSummary(report) {
     `Published green rate: ${(report.summary.publishedGreenRate * 100).toFixed(1)}%`,
     `Average attempts: ${report.summary.averageAttempts.toFixed(2)}`,
     `Average continuations: ${report.summary.averageContinuations.toFixed(2)}`,
+    `Average provider-error retries: ${report.summary.averageProviderErrorRetries.toFixed(2)}`,
     "",
     "## By Complexity",
     "",
@@ -578,11 +579,11 @@ function renderMarkdownSummary(report) {
   lines.push("", "## Areas To Improve", "");
   for (const signal of report.improvementSignals) lines.push(`- ${signal}`);
   lines.push("", "## Samples", "");
-  lines.push("| Scenario | Complexity | Sample | Status | Expected files | Actual files | Checks |");
-  lines.push("| --- | --- | ---: | --- | --- | --- | --- |");
+  lines.push("| Scenario | Complexity | Sample | Status | Provider Retries | Expected files | Actual files | Checks |");
+  lines.push("| --- | --- | ---: | --- | ---: | --- | --- | --- |");
   for (const row of report.rows) {
     lines.push(
-      `| ${row.scenarioId} | ${row.scenarioComplexity ?? ""} | ${row.sample} | ${row.status} | ${(row.expectedRepairFiles ?? []).join(", ")} | ${(row.actualRepairFiles ?? []).join(", ")} | ${row.simulatedCheckConclusion ?? row.prCheckConclusion ?? ""} |`,
+      `| ${row.scenarioId} | ${row.scenarioComplexity ?? ""} | ${row.sample} | ${row.status} | ${row.providerErrorRetriesUsed ?? 0} | ${(row.expectedRepairFiles ?? []).join(", ")} | ${(row.actualRepairFiles ?? []).join(", ")} | ${row.simulatedCheckConclusion ?? row.prCheckConclusion ?? ""} |`,
     );
   }
   lines.push("");
@@ -596,6 +597,7 @@ function printSummary(rows, artifactDir, dryRun) {
   console.log(`- total samples: ${summary.total}`);
   console.log(`- published green: ${summary.publishedGreen}`);
   console.log(`- published green rate: ${(summary.publishedGreenRate * 100).toFixed(1)}%`);
+  console.log(`- average provider-error retries: ${summary.averageProviderErrorRetries.toFixed(2)}`);
   for (const [status, count] of Object.entries(summary.counts)) {
     console.log(`- ${status}: ${count}`);
   }

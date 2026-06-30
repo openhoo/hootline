@@ -296,6 +296,7 @@ test("benchmark summarizer finds latest attempt for a sha", () => {
       status: "published_green",
       attemptCount: 2,
       continuationsUsed: 1,
+      providerErrorRetriesUsed: 1,
       scenarioComplexity: "complex",
       failedTools: ["edit_repo_file"],
     },
@@ -306,6 +307,7 @@ test("benchmark summarizer finds latest attempt for a sha", () => {
   assert.equal(summary.publishedGreenRate, 1);
   assert.equal(summary.averageAttempts, 2);
   assert.equal(summary.averageContinuations, 1);
+  assert.equal(summary.averageProviderErrorRetries, 1);
   assert.deepEqual(summary.byComplexity.complex, {
     total: 1,
     publishedGreen: 1,

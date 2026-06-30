@@ -210,6 +210,7 @@ export function buildBenchmarkRow({ inspector, prChecks, repairResult, sample, s
     toolSequence: attempt?.lastToolSequence ?? [],
     failedTools: attempt?.lastFailedTools ?? [],
     continuationsUsed: attempt?.continuationsUsed ?? 0,
+    providerErrorRetriesUsed: attempt?.providerErrorRetriesUsed ?? 0,
     eventsSeen: attempt?.lastEventsSeen,
     inputTokens: attempt?.lastInputTokens,
     outputTokens: attempt?.lastOutputTokens,
@@ -560,6 +561,10 @@ export function summarizeRows(rows) {
       rows.length === 0
         ? 0
         : rows.reduce((total, row) => total + (row.continuationsUsed ?? 0), 0) / rows.length,
+    averageProviderErrorRetries:
+      rows.length === 0
+        ? 0
+        : rows.reduce((total, row) => total + (row.providerErrorRetriesUsed ?? 0), 0) / rows.length,
     byComplexity,
     failureKinds,
     failedTools,
@@ -618,6 +623,7 @@ function renderMarkdownSummary(report) {
     `Published green rate: ${(report.summary.publishedGreenRate * 100).toFixed(1)}%`,
     `Average attempts: ${report.summary.averageAttempts.toFixed(2)}`,
     `Average continuations: ${report.summary.averageContinuations.toFixed(2)}`,
+    `Average provider-error retries: ${report.summary.averageProviderErrorRetries.toFixed(2)}`,
     "",
     "## By Complexity",
     "",
@@ -636,8 +642,8 @@ function renderMarkdownSummary(report) {
     "",
     "## Samples",
     "",
-    "| Scenario | Complexity | Mutations | Expected Files | Sample | Status | Checks | Attempts | Continuations | Failed Tools | PR | Session |",
-    "| --- | --- | ---: | --- | ---: | --- | --- | ---: | ---: | --- | --- | --- |",
+    "| Scenario | Complexity | Mutations | Expected Files | Sample | Status | Checks | Attempts | Continuations | Provider Retries | Failed Tools | PR | Session |",
+    "| --- | --- | ---: | --- | ---: | --- | --- | ---: | ---: | ---: | --- | --- | --- |",
   ];
   for (const row of report.rows) {
     lines.push(
@@ -647,7 +653,7 @@ function renderMarkdownSummary(report) {
         row.status,
       )} | ${markdownCell(row.prCheckConclusion ?? "")} | ${row.attemptCount ?? 0} | ${
         row.continuationsUsed ?? 0
-      } | ${markdownCell((row.failedTools ?? []).join(", "))} | ${markdownCell(row.prUrl ?? "")} | ${markdownCell(
+      } | ${row.providerErrorRetriesUsed ?? 0} | ${markdownCell((row.failedTools ?? []).join(", "))} | ${markdownCell(row.prUrl ?? "")} | ${markdownCell(
         row.sessionId ?? "",
       )} |`,
     );
@@ -665,6 +671,7 @@ function printSummary(rows, artifactDir, dryRun) {
     console.log(`- ${status}: ${count}`);
   }
   console.log(`- published green rate: ${(summary.publishedGreenRate * 100).toFixed(1)}%`);
+  console.log(`- average provider-error retries: ${summary.averageProviderErrorRetries.toFixed(2)}`);
   for (const [complexity, group] of Object.entries(summary.byComplexity)) {
     console.log(`- ${complexity}: ${group.publishedGreen}/${group.total} published green`);
   }
