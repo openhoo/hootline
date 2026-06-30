@@ -1,5 +1,11 @@
 # hootline Changelog
 
+## 0.4.0 (2026-06-30)
+
+### Features
+
+- add realistic benchmark fixture projects (5df0fdd)
+
 ## 0.3.0 (2026-06-30)
 
 ### Features
