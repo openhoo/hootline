@@ -1,4 +1,5 @@
 import { buildCartLines, physicalWeightOunces, sumLineSubtotals, taxableSubtotal } from "./catalog.js";
+import { customerTaxableSubtotal, resolveCustomer } from "./customers.js";
 import { reserveInventory } from "./inventory.js";
 import { applyStoreCredit, authorizePayment } from "./payments.js";
 import { calculateDiscountCents } from "./promotions.js";
@@ -13,10 +14,12 @@ export function quoteOrder({
   promotionCode,
   shippingServiceLevel = "standard",
   storeCreditCents = 0,
-  warehouseRegion = "west",
+  warehouseRegion,
 }) {
+  const customer = resolveCustomer(customerId);
+  const fulfillmentRegion = warehouseRegion ?? customer.preferredWarehouseRegion ?? "west";
   const lines = buildCartLines(items);
-  const inventoryReservations = reserveInventory(lines, warehouseRegion);
+  const inventoryReservations = reserveInventory(lines, fulfillmentRegion);
   const merchandiseSubtotalCents = sumLineSubtotals(lines);
   const discountCents = calculateDiscountCents(merchandiseSubtotalCents, promotionCode);
   const discountedSubtotalCents = merchandiseSubtotalCents - discountCents;
@@ -28,17 +31,20 @@ export function quoteOrder({
     serviceLevel: shippingServiceLevel,
     weightOunces: physicalWeightOunces(lines),
   });
-  const taxCents = calculateTaxCents(taxableSubtotal(lines), destinationState);
+  const taxableBasisCents = customerTaxableSubtotal(customer, taxableSubtotal(lines));
+  const taxCents = calculateTaxCents(taxableBasisCents, destinationState);
   const totalBeforeCreditCents = discountedSubtotalCents + shipping.costCents + taxCents;
   const payment = applyStoreCredit(totalBeforeCreditCents, storeCreditCents);
   const authorization = authorizePayment({
     amountDueCents: payment.amountDueCents,
-    customerId,
+    customerId: customer.id,
     idempotencyKey,
   });
 
   return {
-    customerId,
+    customer,
+    customerId: customer.id,
+    fulfillmentRegion,
     inventoryReservations,
     lines,
     payment: {

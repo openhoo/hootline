@@ -6,6 +6,7 @@ export { MACROS, applyMacro } from "./macros.js";
 export { buildNotification, notificationKey } from "./notifications.js";
 export { canCloseTicket, canViewTicket } from "./permissions.js";
 export { summarizeTickets } from "./reporting.js";
+export { REQUESTER_PROFILES, requesterDomain, resolveRequesterProfile } from "./requesters.js";
 export { assignQueue, routeTicket } from "./routing.js";
 export { calculateDueAt, weekendDelayHours } from "./sla.js";
 export { createTicket } from "./tickets.js";

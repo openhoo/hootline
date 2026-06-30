@@ -206,6 +206,34 @@ export const SCENARIOS = [
     expectedRepairFiles: ["src/money.js", "src/shipping.js", "src/tax.js"],
   }),
   scenario({
+    projectId: "commerce-platform",
+    id: "account-aware-fulfillment-cascade",
+    title: "account-aware checkout preserves tax exemption, freight carrier, and payment idempotency",
+    complexity: "complex",
+    tags: ["commerce", "customers", "tax", "fulfillment", "payments", "multi-file"],
+    mutations: [
+      {
+        sourcePath: "src/checkout.js",
+        passingText: `  const taxableBasisCents = customerTaxableSubtotal(customer, taxableSubtotal(lines));
+  const taxCents = calculateTaxCents(taxableBasisCents, destinationState);`,
+        failingText: "  const taxCents = calculateTaxCents(taxableSubtotal(lines), destinationState);",
+      },
+      {
+        sourcePath: "src/fulfillment.js",
+        passingText: '  if (shipping.method === "freight") return "Freight Partner";',
+        failingText: '  if (shipping.method === "freight") return "Parcel Standard";',
+      },
+      {
+        sourcePath: "src/payments.js",
+        passingText: "  const normalizedKey = String(idempotencyKey).trim().toLowerCase();",
+        failingText: "  const normalizedKey = String(idempotencyKey).trim();",
+      },
+    ],
+    commitMessage: "Reproduce failing account-aware fulfillment cascade",
+    expectedFailure: "tax exempt customers, freight fulfillment, and normalized payment idempotency",
+    expectedRepairFiles: ["src/checkout.js", "src/fulfillment.js", "src/payments.js"],
+  }),
+  scenario({
     projectId: "support-desk",
     id: "ticket-email-normalization",
     title: "ticket intake normalizes requester email addresses",
@@ -290,8 +318,8 @@ export const SCENARIOS = [
     complexity: "basic",
     tags: ["support", "notifications", "dedupe"],
     sourcePath: "src/notifications.js",
-    passingText: "  const normalizedChannel = String(channel).trim().toLowerCase();",
-    failingText: "  const normalizedChannel = String(channel).trim();",
+    passingText: "  return String(channel).trim().toLowerCase();",
+    failingText: "  return String(channel).trim();",
     commitMessage: "Reproduce failing notification dedupe pipeline",
     expectedFailure: "notification keys dedupe channel case and whitespace",
     expectedRepairFile: "src/notifications.js",
@@ -361,6 +389,36 @@ export const SCENARIOS = [
     commitMessage: "Reproduce failing support triage cascade",
     expectedFailure: "support triage recovers email, routing, and SLA regressions",
     expectedRepairFiles: ["src/tickets.js", "src/routing.js", "src/sla.js"],
+  }),
+  scenario({
+    projectId: "support-desk",
+    id: "requester-profile-triage-cascade",
+    title: "requester profile triage preserves plan inference, billing routing, and localized notifications",
+    complexity: "complex",
+    tags: ["support", "requesters", "routing", "notifications", "multi-file"],
+    mutations: [
+      {
+        sourcePath: "src/workflow.js",
+        passingText: `  const customerPlanId = input.customerPlanId ?? requesterProfile.customerPlanId ?? ticket.customerPlanId;
+  const customerPlan = lookupCustomerPlan(customerPlanId);`,
+        failingText: "  const customerPlan = lookupCustomerPlan(ticket.customerPlanId);",
+      },
+      {
+        sourcePath: "src/routing.js",
+        passingText: `  if (ticket.tags.includes("billing")) return "billing";
+  if (customerPlan.prioritySupport) return "priority";`,
+        failingText: `  if (customerPlan.prioritySupport) return "priority";
+  if (ticket.tags.includes("billing")) return "billing";`,
+      },
+      {
+        sourcePath: "src/notifications.js",
+        passingText: '  const prefix = SUBJECT_PREFIX_BY_LOCALE[locale] ?? SUBJECT_PREFIX_BY_LOCALE["en-US"];',
+        failingText: '  const prefix = SUBJECT_PREFIX_BY_LOCALE["en-US"];',
+      },
+    ],
+    commitMessage: "Reproduce failing requester profile triage cascade",
+    expectedFailure: "known requester profiles drive plan inference, billing routing, and localized notifications",
+    expectedRepairFiles: ["src/workflow.js", "src/routing.js", "src/notifications.js"],
   }),
 ];
 

@@ -1,7 +1,7 @@
 export function routeTicket(ticket, customerPlan) {
   if (ticket.severity === "critical") return "incident";
-  if (customerPlan.prioritySupport) return "priority";
   if (ticket.tags.includes("billing")) return "billing";
+  if (customerPlan.prioritySupport) return "priority";
   if (ticket.tags.includes("bug")) return "engineering";
   return "support";
 }

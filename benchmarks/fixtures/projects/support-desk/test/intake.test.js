@@ -37,6 +37,23 @@ test("priority support routes enterprise tickets to priority queue", () => {
   assert.equal(result.assignment.queue, "priority");
 });
 
+test("known enterprise requester profiles infer plan, locale, and billing routing", () => {
+  const result = intakeTicket({
+    id: "T-108",
+    requesterEmail: "lead@vip.example.com",
+    openedAt: "2026-01-15T10:00:00.000Z",
+    subject: "Billing account issue",
+    tags: ["billing"],
+  });
+
+  assert.equal(result.requesterProfile.accountId, "acme-enterprise");
+  assert.equal(result.customerPlan.id, "enterprise");
+  assert.equal(result.assignment.queue, "billing");
+  assert.equal(result.dueAt, "2026-01-15T14:00:00.000Z");
+  assert.equal(result.notification.locale, "de-DE");
+  assert.equal(result.notification.subject, "Anfrage T-108: Billing account issue");
+});
+
 test("critical tickets route to incident response before plan routing", () => {
   const result = intakeTicket({
     id: "T-102",
@@ -78,6 +95,7 @@ test("notification keys dedupe channel case and whitespace", () => {
   const second = buildNotification(ticket, "email");
 
   assert.equal(first.key, second.key);
+  assert.equal(first.channel, "email");
 });
 
 test("audit events redact internal notes", () => {

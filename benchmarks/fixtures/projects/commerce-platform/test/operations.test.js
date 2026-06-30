@@ -33,7 +33,48 @@ test("fulfillment plans hold back backordered shipments", () => {
   });
 
   assert.equal(plan.status, "backordered");
+  assert.equal(plan.carrier, "Pending Inventory");
   assert.equal(canReleaseShipment(plan, order.payment), false);
+});
+
+test("customer warehouse preference is used when no region is provided", () => {
+  const order = quoteOrder({
+    customerId: "cafe-alma",
+    items: [{ sku: "coffee-beans", quantity: 1 }],
+    destinationState: "OR",
+  });
+
+  assert.equal(order.fulfillmentRegion, "east");
+  assert.equal(order.inventoryReservations[0].region, "east");
+});
+
+test("freight shipments use the freight carrier when inventory is ready", () => {
+  const order = quoteOrder({
+    items: [{ sku: "espresso-machine", quantity: 1 }],
+    destinationState: "WA",
+  });
+  const plan = buildFulfillmentPlan({
+    destinationState: "WA",
+    reservations: order.inventoryReservations,
+    shipping: order.shipping,
+  });
+
+  assert.equal(order.shipping.method, "freight");
+  assert.equal(plan.status, "ready");
+  assert.equal(plan.carrier, "Freight Partner");
+  assert.equal(canReleaseShipment(plan, order.payment), true);
+});
+
+test("payment authorization uses resolved customer id and normalized idempotency key", () => {
+  const order = quoteOrder({
+    customerId: " Cafe-Alma ",
+    idempotencyKey: " Checkout-123 ",
+    items: [{ sku: "coffee-beans", quantity: 1 }],
+    destinationState: "OR",
+  });
+
+  assert.equal(order.customerId, "cafe-alma");
+  assert.equal(order.payment.authorization.authorizationId, "cafe-alma:checkout-123:3999");
 });
 
 test("invoice rendering includes customer identity and amount due", () => {

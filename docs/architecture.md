@@ -28,9 +28,12 @@ operator tooling, benchmark infrastructure, tests, or documentation.
 
 - `benchmarks/fixtures/projects/`: realistic first-party fixture applications
   used by the simulated provider benchmark. Each project has its own policy,
-  source tree, tests, and verification command.
+  source tree, tests, and verification command. Fixture apps should keep enough
+  domain context around each bug that the agent has to navigate neighboring
+  modules, not just patch an isolated toy function.
 - `scripts/fixture-scenarios.mjs`: scenario catalog and mutation helpers for
-  simulated benchmark scenarios, including project metadata and template paths.
+  simulated benchmark scenarios, including project metadata, template paths, and
+  multi-file mutation definitions for complex issue classes.
 - `scripts/simulated-benchmark.mjs`: primary benchmark CLI. It runs Hootline
   against an isolated local Eve app workspace and the simulated GitHub provider.
 - `scripts/benchmarks/common.mjs`: shared benchmark row, status, summary, and

@@ -83,7 +83,7 @@ test("fixture scenario selection supports all and rejects unknown ids", () => {
     ["support-desk"],
   );
   assert.equal(resolveScenarios("all").length, SCENARIOS.length);
-  assert.equal(SCENARIOS.length, 23);
+  assert.equal(SCENARIOS.length, 25);
   assert.deepEqual(
     resolveScenarios("shipping-threshold-basis,percentage-rounding").map(
       (scenario: { id: string }) => scenario.id,
@@ -92,7 +92,7 @@ test("fixture scenario selection supports all and rejects unknown ids", () => {
   );
   assert.deepEqual(
     resolveScenarios("all", { projects: "support-desk" }).map((scenario: { projectId: string }) => scenario.projectId),
-    Array(11).fill("support-desk"),
+    Array(12).fill("support-desk"),
   );
   assert.throws(() => resolveScenario("missing"), /Unknown fixture scenario/);
   assert.throws(() => resolveProjects("missing"), /Unknown fixture project/);
@@ -100,7 +100,9 @@ test("fixture scenario selection supports all and rejects unknown ids", () => {
 
 test("complex fixture scenarios expose all mutated and expected repair files", () => {
   const scenario = resolveScenario("checkout-money-shipping-tax-cascade");
+  const commerceCascade = resolveScenario("account-aware-fulfillment-cascade");
   const support = resolveScenario("support-triage-cascade");
+  const requesterCascade = resolveScenario("requester-profile-triage-cascade");
 
   assert.equal(scenario.projectId, "commerce-platform");
   assert.equal(scenario.complexity, "complex");
@@ -115,6 +117,30 @@ test("complex fixture scenarios expose all mutated and expected repair files", (
   assert.equal(scenarioMutations(support).length, 3);
   assert.deepEqual(scenarioSourcePaths(support), ["src/tickets.js", "src/routing.js", "src/sla.js"]);
   assert.deepEqual(scenarioExpectedRepairFiles(support), ["src/tickets.js", "src/routing.js", "src/sla.js"]);
+  assert.equal(commerceCascade.projectId, "commerce-platform");
+  assert.equal(commerceCascade.complexity, "complex");
+  assert.deepEqual(scenarioSourcePaths(commerceCascade), [
+    "src/checkout.js",
+    "src/fulfillment.js",
+    "src/payments.js",
+  ]);
+  assert.deepEqual(scenarioExpectedRepairFiles(commerceCascade), [
+    "src/checkout.js",
+    "src/fulfillment.js",
+    "src/payments.js",
+  ]);
+  assert.equal(requesterCascade.projectId, "support-desk");
+  assert.equal(requesterCascade.complexity, "complex");
+  assert.deepEqual(scenarioSourcePaths(requesterCascade), [
+    "src/workflow.js",
+    "src/routing.js",
+    "src/notifications.js",
+  ]);
+  assert.deepEqual(scenarioExpectedRepairFiles(requesterCascade), [
+    "src/workflow.js",
+    "src/routing.js",
+    "src/notifications.js",
+  ]);
 });
 
 test("simulated benchmark dry-run does not require a server or provider credentials", () => {

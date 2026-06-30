@@ -4,8 +4,9 @@ export function createTicket(input) {
   return {
     id: input.id,
     requesterEmail,
-    customerPlanId: input.customerPlanId ?? "free",
+    customerPlanId: input.customerPlanId,
     severity: input.severity ?? "normal",
+    source: input.source ?? "web",
     status: input.status ?? "open",
     subject: String(input.subject ?? "Support request").trim(),
     team: input.team ?? "support",

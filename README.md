@@ -365,7 +365,10 @@ The benchmark projects are intentionally larger than the individual scenario
 mutations. The default suite currently includes `commerce-platform` and
 `support-desk`, each with its own `package.json`, `.hootline.yaml`, `src/`, and
 `test/` tree. This makes the repair loop navigate realistic project directories
-even when a scenario changes only one business rule.
+even when a scenario changes only one business rule. The fixtures include
+cross-module workflows such as customer-aware checkout tax, warehouse
+reservation, freight fulfillment, payment authorization, requester-profile
+inference, queue routing, localized notifications, audit, and reporting.
 
 The runner starts a built local Eve server automatically unless `--server-url`
 is supplied. For auto-started servers it sets
@@ -387,10 +390,10 @@ count, project id, verification commands, the expected repair file set, summary
 breakdowns by project, complexity, tag, and mutation count, and non-green
 improvement signals.
 
-Scenario ids are listed by `npm run benchmark:sim -- --help`. The current
-scenario catalog is kept stable for benchmark comparability while the fixed
-project itself carries broader source and test context around each injected
-regression.
+Scenario ids are listed by `npm run benchmark:sim -- --help`. The catalog favors
+a bounded set of realistic regressions over broad scenario volume: most rows are
+single-rule issues inside larger applications, while complex rows require
+multi-file repairs across domain boundaries.
 
 ### Cloudflare Quick Tunnel
 

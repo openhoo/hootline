@@ -1,7 +1,7 @@
 export { PRODUCTS, buildCartLines, physicalWeightOunces, sumLineSubtotals, taxableSubtotal } from "./catalog.js";
 export { quoteOrder } from "./checkout.js";
-export { CUSTOMERS, customerTierLabel, resolveCustomer } from "./customers.js";
-export { buildFulfillmentPlan, canReleaseShipment } from "./fulfillment.js";
+export { CUSTOMERS, customerTaxableSubtotal, customerTierLabel, resolveCustomer } from "./customers.js";
+export { buildFulfillmentPlan, canReleaseShipment, selectCarrier } from "./fulfillment.js";
 export { hasBackorders, reserveInventory } from "./inventory.js";
 export { buildInvoice, invoiceReference } from "./invoice.js";
 export { formatCents, percentageOfCents } from "./money.js";

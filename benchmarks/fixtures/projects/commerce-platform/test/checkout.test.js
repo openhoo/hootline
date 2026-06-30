@@ -131,6 +131,18 @@ test("tax calculation uses destination state's configured rate", () => {
   assert.equal(order.totals.taxCents, 208);
 });
 
+test("tax exempt customers do not pay destination sales tax", () => {
+  const order = quoteOrder({
+    customerId: "nonprofit-roasters",
+    items: [{ sku: "coffee-beans", quantity: 1 }],
+    destinationState: "WA",
+  });
+
+  assert.equal(order.customer.taxExempt, true);
+  assert.equal(order.totals.taxCents, 0);
+  assert.equal(order.totals.totalCents, 3999);
+});
+
 test("inventory reservations surface realistic surrounding project behavior", () => {
   const reservations = reserveInventory([{ sku: "espresso-machine", quantity: 2 }]);
 
