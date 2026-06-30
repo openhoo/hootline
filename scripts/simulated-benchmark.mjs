@@ -7,6 +7,7 @@ import {
   existsSync,
   mkdirSync,
   readFileSync,
+  renameSync,
   rmSync,
   writeFileSync,
 } from "node:fs";
@@ -37,6 +38,7 @@ import {
 } from "./benchmarks/simulated-app.mjs";
 
 const DEFAULTS = {
+  concurrency: readEnvInteger("HOOTLINE_SIMULATED_CONCURRENCY", 1),
   fixtureTemplatePath:
     process.env.HOOTLINE_SIMULATED_FIXTURE_TEMPLATE_PATH ??
     "benchmarks/fixtures/pipeline-repo",
@@ -90,6 +92,7 @@ export async function main(options) {
   console.log(`Simulator state path: ${simulatorStatePath}`);
   console.log(`Scenarios: ${scenarios.map((scenario) => scenario.id).join(", ")}`);
   console.log(`Samples per scenario: ${options.samples}`);
+  console.log(`Concurrency: ${options.concurrency}`);
   if (options.dryRun) console.log("Mode: dry run");
   if (options.mockModel) console.log("Model mode: deterministic mock");
 
@@ -119,31 +122,36 @@ export async function main(options) {
     return started.url;
   }));
 
-  const rows = [];
-  try {
-    for (const scenario of scenarios) {
-      for (let sample = 1; sample <= options.samples; sample += 1) {
-        const row = await runScenarioSample({
-          artifactDir,
-          fixtureTemplatePath,
-          options,
-          runId,
-          sample,
-          scenario,
-          serverUrl,
-          simulatorStatePath,
-          statePath,
-        });
-        rows.push(row);
-        writeArtifacts({ artifactDir, options, rows, scenarios, startedAt });
-      }
+  const jobs = [];
+  for (const scenario of scenarios) {
+    for (let sample = 1; sample <= options.samples; sample += 1) {
+      jobs.push({ sample, scenario });
     }
+  }
+  const rows = new Array(jobs.length);
+  try {
+    await runWithConcurrency(jobs, options.concurrency, async ({ sample, scenario }, index) => {
+      const row = await runScenarioSample({
+        artifactDir,
+        fixtureTemplatePath,
+        options,
+        runId,
+        sample,
+        scenario,
+        serverUrl,
+        simulatorStatePath,
+        statePath,
+      });
+      rows[index] = row;
+      writeArtifacts({ artifactDir, options, rows: compactRows(rows), scenarios, startedAt });
+    });
   } finally {
     if (server !== undefined) await stopBenchmarkServer(server);
   }
 
-  writeArtifacts({ artifactDir, options, rows, scenarios, startedAt });
-  printSummary(rows, artifactDir, options.dryRun);
+  const completedRows = compactRows(rows);
+  writeArtifacts({ artifactDir, options, rows: completedRows, scenarios, startedAt });
+  printSummary(completedRows, artifactDir, options.dryRun);
 }
 
 async function runScenarioSample({
@@ -279,6 +287,25 @@ function dryRunRow({ sample, sampleStartedAt, scenario }) {
     simulated: true,
     scenarioSourcePaths: scenarioSourcePaths(scenario),
   };
+}
+
+async function runWithConcurrency(items, concurrency, worker) {
+  let nextIndex = 0;
+  const workerCount = Math.min(concurrency, items.length);
+  await Promise.all(
+    Array.from({ length: workerCount }, async () => {
+      for (;;) {
+        const index = nextIndex;
+        nextIndex += 1;
+        if (index >= items.length) return;
+        await worker(items[index], index);
+      }
+    }),
+  );
+}
+
+function compactRows(rows) {
+  return rows.filter((row) => row !== undefined);
 }
 
 async function waitForRepairResult({ deliveryId, options, pipelineId, serverUrl, sha, statePath }) {
@@ -485,24 +512,69 @@ function writeCommandArtifact(sampleDir, label, result) {
 }
 
 function appendSimulatorSample(simulatorStatePath, sample) {
-  const state = readJsonFile(simulatorStatePath, {
-    samples: {},
-    pullRequests: {},
-    nextPullRequestNumber: 1,
-    comments: [],
-    reruns: [],
-    merges: [],
+  updateSimulatorState(simulatorStatePath, (state) => {
+    state.samples = {
+      ...(state.samples ?? {}),
+      [`${sample.repoSlug}@${sample.sha}`]: sample,
+    };
   });
-  state.samples = {
-    ...(state.samples ?? {}),
-    [`${sample.repoSlug}@${sample.sha}`]: sample,
-  };
-  writeSimulatorState(simulatorStatePath, state);
 }
 
 function writeSimulatorState(simulatorStatePath, state) {
+  withSimulatorStateLock(simulatorStatePath, () => {
+    writeSimulatorStateUnlocked(simulatorStatePath, state);
+  });
+}
+
+function updateSimulatorState(simulatorStatePath, mutator) {
+  withSimulatorStateLock(simulatorStatePath, () => {
+    const state = readJsonFile(simulatorStatePath, {
+      samples: {},
+      pullRequests: {},
+      nextPullRequestNumber: 1,
+      comments: [],
+      reruns: [],
+      merges: [],
+    });
+    mutator(state);
+    writeSimulatorStateUnlocked(simulatorStatePath, state);
+  });
+}
+
+function writeSimulatorStateUnlocked(simulatorStatePath, state) {
   mkdirSync(dirname(simulatorStatePath), { recursive: true });
-  writeFileSync(simulatorStatePath, `${JSON.stringify(state, null, 2)}\n`);
+  const tempPath = `${simulatorStatePath}.${process.pid}.${randomUUID()}.tmp`;
+  writeFileSync(tempPath, `${JSON.stringify(state, null, 2)}\n`);
+  renameSync(tempPath, simulatorStatePath);
+}
+
+function withSimulatorStateLock(simulatorStatePath, callback) {
+  const lockPath = `${simulatorStatePath}.lock`;
+  const deadline = Date.now() + 30_000;
+  for (;;) {
+    try {
+      mkdirSync(lockPath);
+      break;
+    } catch (error) {
+      if (!isNodeError(error) || error.code !== "EEXIST" || Date.now() > deadline) {
+        throw error;
+      }
+      sleepSync(25);
+    }
+  }
+  try {
+    return callback();
+  } finally {
+    rmSync(lockPath, { recursive: true, force: true });
+  }
+}
+
+function sleepSync(ms) {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+}
+
+function isNodeError(error) {
+  return error instanceof Error && "code" in error;
 }
 
 function readSimulatedPullRequestChecks(simulatorStatePath, repoSlug, number) {
@@ -563,6 +635,7 @@ function writeArtifacts({ artifactDir, options, rows, scenarios, startedAt }) {
     repo: options.repo,
     scenarios: scenarios.map((scenario) => scenario.id),
     samples: options.samples,
+    concurrency: options.concurrency,
     simulated: true,
     rows,
     summary: summarizeRows(rows),
@@ -583,6 +656,7 @@ function renderMarkdownSummary(report) {
     `Started: ${report.startedAt}`,
     `Completed: ${report.completedAt}`,
     `Repo: ${report.repo}`,
+    `Concurrency: ${report.concurrency}`,
     "",
     "## Summary",
     "",
@@ -601,6 +675,34 @@ function renderMarkdownSummary(report) {
   for (const [complexity, group] of Object.entries(report.summary.byComplexity)) {
     lines.push(
       `| ${complexity} | ${group.total} | ${group.publishedGreen} | ${(group.publishedGreenRate * 100).toFixed(1)}% | ${formatCounts(group.counts)} |`,
+    );
+  }
+  lines.push(
+    "",
+    "## By Tag",
+    "",
+    "| Tag | Samples | Published green | Rate | Status counts |",
+    "| --- | ---: | ---: | ---: | --- |",
+  );
+  for (const [tag, group] of Object.entries(report.summary.byTag).sort(([left], [right]) =>
+    left.localeCompare(right),
+  )) {
+    lines.push(
+      `| ${tag} | ${group.total} | ${group.publishedGreen} | ${(group.publishedGreenRate * 100).toFixed(1)}% | ${formatCounts(group.counts)} |`,
+    );
+  }
+  lines.push(
+    "",
+    "## By Mutation Count",
+    "",
+    "| Mutations | Samples | Published green | Rate | Status counts |",
+    "| ---: | ---: | ---: | ---: | --- |",
+  );
+  for (const [mutationCount, group] of Object.entries(report.summary.byMutationCount).sort(
+    ([left], [right]) => Number(left) - Number(right),
+  )) {
+    lines.push(
+      `| ${mutationCount} | ${group.total} | ${group.publishedGreen} | ${(group.publishedGreenRate * 100).toFixed(1)}% | ${formatCounts(group.counts)} |`,
     );
   }
   lines.push("", "## Areas To Improve", "");
@@ -631,6 +733,18 @@ function printSummary(rows, artifactDir, dryRun) {
   for (const [complexity, group] of Object.entries(summary.byComplexity)) {
     console.log(
       `- ${complexity}: ${group.publishedGreen}/${group.total} published green (${(group.publishedGreenRate * 100).toFixed(1)}%)`,
+    );
+  }
+  for (const [tag, group] of Object.entries(summary.byTag).sort(([left], [right]) => left.localeCompare(right))) {
+    console.log(
+      `- tag ${tag}: ${group.publishedGreen}/${group.total} published green (${(group.publishedGreenRate * 100).toFixed(1)}%)`,
+    );
+  }
+  for (const [mutationCount, group] of Object.entries(summary.byMutationCount).sort(
+    ([left], [right]) => Number(left) - Number(right),
+  )) {
+    console.log(
+      `- ${mutationCount} mutation(s): ${group.publishedGreen}/${group.total} published green (${(group.publishedGreenRate * 100).toFixed(1)}%)`,
     );
   }
   for (const signal of summarizeImprovementSignals(rows)) {
@@ -718,6 +832,9 @@ function parseArgs(argv) {
     if (value === undefined) fail(`Missing value for ${arg}`);
 
     switch (name) {
+      case "--concurrency":
+        parsed.concurrency = readPositiveInteger(value, name);
+        break;
       case "--fixture-template-path":
         parsed.fixtureTemplatePath = value;
         break;
@@ -763,6 +880,7 @@ Options:
   --mock-model                    Use the deterministic Hootline mock model
   --scenarios <ids|all>           Comma-separated scenario ids (default: ${DEFAULTS.scenarios})
   --samples <n>                   Samples per scenario (default: ${DEFAULTS.samples})
+  --concurrency <n>               Scenario samples to run concurrently (default: ${DEFAULTS.concurrency})
   --repo <owner/name>             Simulated repository slug (default: ${DEFAULTS.repo})
   --server-url <url>              Use an already-running Hootline server
   --fixture-template-path <path>  Fixture template path (default: ${DEFAULTS.fixtureTemplatePath})

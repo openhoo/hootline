@@ -485,6 +485,32 @@ function renderMarkdownSummary(report) {
         ).toFixed(1)}% |`,
     ),
     "",
+    "## By Tag",
+    "",
+    "| Tag | Samples | Published Green | Green Rate | Status Counts |",
+    "| --- | ---: | ---: | ---: | --- |",
+    ...Object.entries(report.summary.byTag)
+      .sort(([left], [right]) => left.localeCompare(right))
+      .map(
+        ([tag, group]) =>
+          `| ${markdownCell(tag)} | ${group.total} | ${group.publishedGreen} | ${(
+            group.publishedGreenRate * 100
+          ).toFixed(1)}% | ${markdownCell(formatCounts(group.counts))} |`,
+      ),
+    "",
+    "## By Mutation Count",
+    "",
+    "| Mutations | Samples | Published Green | Green Rate | Status Counts |",
+    "| ---: | ---: | ---: | ---: | --- |",
+    ...Object.entries(report.summary.byMutationCount)
+      .sort(([left], [right]) => Number(left) - Number(right))
+      .map(
+        ([mutationCount, group]) =>
+          `| ${mutationCount} | ${group.total} | ${group.publishedGreen} | ${(
+            group.publishedGreenRate * 100
+          ).toFixed(1)}% | ${markdownCell(formatCounts(group.counts))} |`,
+      ),
+    "",
     "## Areas To Improve",
     "",
     ...report.improvementSignals.map((signal) => `- ${signal}`),
@@ -523,6 +549,14 @@ function printSummary(rows, artifactDir, dryRun) {
   console.log(`- average provider-error retries: ${summary.averageProviderErrorRetries.toFixed(2)}`);
   for (const [complexity, group] of Object.entries(summary.byComplexity)) {
     console.log(`- ${complexity}: ${group.publishedGreen}/${group.total} published green`);
+  }
+  for (const [tag, group] of Object.entries(summary.byTag).sort(([left], [right]) => left.localeCompare(right))) {
+    console.log(`- tag ${tag}: ${group.publishedGreen}/${group.total} published green`);
+  }
+  for (const [mutationCount, group] of Object.entries(summary.byMutationCount).sort(
+    ([left], [right]) => Number(left) - Number(right),
+  )) {
+    console.log(`- ${mutationCount} mutation(s): ${group.publishedGreen}/${group.total} published green`);
   }
   for (const signal of summarizeImprovementSignals(rows)) {
     console.log(`- signal: ${signal}`);
@@ -690,6 +724,12 @@ function shellQuote(value) {
 
 function markdownCell(value) {
   return String(value).replace(/\r?\n/g, " ").replaceAll("|", "\\|");
+}
+
+function formatCounts(counts) {
+  return Object.entries(counts)
+    .map(([status, count]) => `${status}: ${count}`)
+    .join(", ");
 }
 
 function printHelp() {

@@ -389,6 +389,12 @@ Run the same simulated harness with the configured real model:
 npm run benchmark:sim -- --scenarios all --samples 1
 ```
 
+Run multiple simulated scenario samples concurrently:
+
+```sh
+npm run benchmark:sim -- --mock-model --scenarios all --samples 1 --concurrency 4
+```
+
 The runner starts a built local Eve server automatically unless `--server-url`
 is supplied. For auto-started servers it sets
 `HOOTLINE_GITHUB_PROVIDER_BACKEND=simulated`,
@@ -401,6 +407,10 @@ metadata, including actual changed files, expected-vs-actual repair file match,
 and simulated branch check conclusion. Shared row/status/summary helpers live in
 `scripts/benchmarks/common.mjs`; the simulated runner should not import the live
 fixture benchmark CLI for common behavior.
+
+`--concurrency` applies only to the simulated benchmark. The live fixture
+benchmark intentionally runs sequentially because each sample resets and pushes
+the same fixture repository.
 
 ## Fixture Benchmark
 
@@ -436,16 +446,17 @@ The benchmark waits for the pushed fixture workflow to fail, waits for Hootline
 to publish or terminate the repair attempt, waits for fixer PR checks when a PR
 is opened, and records attempt count, tool sequence, failed tools, continuation
 count, token usage, terminal action, PR URL, PR check result, scenario
-complexity, scenario tags, mutation count, the expected repair file set, and
-non-green improvement signals. If a repair attempt terminates without publishing
-and policy still allows another attempt, the runner asks GitHub to redeliver the
-App webhook once more.
+complexity, scenario tags, mutation count, the expected repair file set, summary
+breakdowns by complexity, tag, and mutation count, and non-green improvement
+signals. If a repair attempt terminates without publishing and policy still
+allows another attempt, the runner asks GitHub to redeliver the App webhook once
+more.
 
 Scenario ids are listed by `npm run fixture:benchmark -- --help`. The catalog
-includes single-module regressions for shipping, promotion normalization, tax,
-catalog, money, and receipt behavior, plus multi-file cascade scenarios that
-force the repair agent to reconcile several failing business rules before
-publishing.
+includes single-module regressions for shipping, promotions, tax, catalog,
+money, receipt, defaults, fallbacks, boundaries, and formatting behavior, plus
+multi-file cascade scenarios that force the repair agent to reconcile several
+failing business rules before publishing.
 
 ### Cloudflare Quick Tunnel
 

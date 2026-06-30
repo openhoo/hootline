@@ -160,41 +160,45 @@ export class SimulatedGitHubProvider implements ProviderClient {
         ? "success"
         : "failure";
       const commitSha = simulatedCommitSha(input.event, input.changes, input.summary);
-      const number = input.policy.mode === "push_branch" ? undefined : nextPullRequestNumber();
       const now = new Date().toISOString();
 
-      if (number !== undefined) {
-        const state = loadSimulatorState();
-        const record: SimulatedPullRequestRecord = {
-          provider: "github",
-          repoSlug: input.event.repoSlug,
-          scenarioId: sample.scenarioId,
-          number,
-          url: `https://simulated.github.local/${input.event.repoSlug}/pull/${number}`,
-          branch,
-          baseRef: input.event.targetBranch ?? input.event.ref,
-          headSha: commitSha,
-          sourceSha: input.event.sha,
-          summary: input.summary,
-          state: "open",
-          merged: false,
-          createdAt: now,
-          updatedAt: now,
-          changes: input.changes.map((change) => ({ path: change.path, status: change.status })),
-          checks,
-          checkConclusion,
-        };
-        state.pullRequests = { ...(state.pullRequests ?? {}), [pullRequestKey(input.event.repoSlug, number)]: record };
-        state.nextPullRequestNumber = Math.max(state.nextPullRequestNumber ?? 1, number + 1);
-        saveSimulatorState(state);
+      if (input.policy.mode !== "push_branch") {
+        const record = updateSimulatorState((state) => {
+          const number = state.nextPullRequestNumber ?? 1;
+          const nextRecord: SimulatedPullRequestRecord = {
+            provider: "github",
+            repoSlug: input.event.repoSlug,
+            scenarioId: sample.scenarioId,
+            number,
+            url: `https://simulated.github.local/${input.event.repoSlug}/pull/${number}`,
+            branch,
+            baseRef: input.event.targetBranch ?? input.event.ref,
+            headSha: commitSha,
+            sourceSha: input.event.sha,
+            summary: input.summary,
+            state: "open",
+            merged: false,
+            createdAt: now,
+            updatedAt: now,
+            changes: input.changes.map((change) => ({ path: change.path, status: change.status })),
+            checks,
+            checkConclusion,
+          };
+          state.pullRequests = {
+            ...(state.pullRequests ?? {}),
+            [pullRequestKey(input.event.repoSlug, number)]: nextRecord,
+          };
+          state.nextPullRequestNumber = number + 1;
+          return nextRecord;
+        });
         return {
           provider: "github",
           mode: input.policy.mode,
           branch,
           commitSha,
-          changeNumber: number,
+          changeNumber: record.number,
           changeUrl: record.url,
-          message: `Published simulated fix PR #${number}: ${record.url}`,
+          message: `Published simulated fix PR #${record.number}: ${record.url}`,
         };
       }
 
@@ -211,44 +215,45 @@ export class SimulatedGitHubProvider implements ProviderClient {
   }
 
   async postComment(event: NormalizedPipelineEvent, body: string): Promise<void> {
-    const state = loadSimulatorState();
-    state.comments = [
-      ...(state.comments ?? []),
-      { repoSlug: event.repoSlug, sha: event.sha, body, postedAt: new Date().toISOString() },
-    ];
-    saveSimulatorState(state);
+    updateSimulatorState((state) => {
+      state.comments = [
+        ...(state.comments ?? []),
+        { repoSlug: event.repoSlug, sha: event.sha, body, postedAt: new Date().toISOString() },
+      ];
+    });
   }
 
   async rerunPipeline(event: NormalizedPipelineEvent): Promise<{ message: string }> {
-    const state = loadSimulatorState();
-    state.reruns = [
-      ...(state.reruns ?? []),
-      { repoSlug: event.repoSlug, sha: event.sha, requestedAt: new Date().toISOString() },
-    ];
-    saveSimulatorState(state);
+    updateSimulatorState((state) => {
+      state.reruns = [
+        ...(state.reruns ?? []),
+        { repoSlug: event.repoSlug, sha: event.sha, requestedAt: new Date().toISOString() },
+      ];
+    });
     return { message: `Requested simulated rerun of workflow run ${event.runId ?? event.pipelineId}.` };
   }
 
   async mergeChange(input: MergeChangeInput): Promise<PublishResult> {
-    const state = loadSimulatorState();
-    const key = pullRequestKey(input.event.repoSlug, input.changeNumber);
-    const existing = state.pullRequests?.[key];
-    if (existing === undefined) {
-      throw new Error(`Simulated PR #${input.changeNumber} does not exist.`);
-    }
     const now = new Date().toISOString();
-    const merged: SimulatedPullRequestRecord = {
-      ...existing,
-      state: "merged",
-      merged: true,
-      updatedAt: now,
-    };
-    state.pullRequests = { ...(state.pullRequests ?? {}), [key]: merged };
-    state.merges = [
-      ...(state.merges ?? []),
-      { repoSlug: input.event.repoSlug, number: input.changeNumber, branch: input.branch, mergedAt: now },
-    ];
-    saveSimulatorState(state);
+    const merged = updateSimulatorState((state) => {
+      const key = pullRequestKey(input.event.repoSlug, input.changeNumber);
+      const existing = state.pullRequests?.[key];
+      if (existing === undefined) {
+        throw new Error(`Simulated PR #${input.changeNumber} does not exist.`);
+      }
+      const nextRecord: SimulatedPullRequestRecord = {
+        ...existing,
+        state: "merged",
+        merged: true,
+        updatedAt: now,
+      };
+      state.pullRequests = { ...(state.pullRequests ?? {}), [key]: nextRecord };
+      state.merges = [
+        ...(state.merges ?? []),
+        { repoSlug: input.event.repoSlug, number: input.changeNumber, branch: input.branch, mergedAt: now },
+      ];
+      return nextRecord;
+    });
     return {
       provider: "github",
       mode: "auto_merge",
@@ -272,6 +277,19 @@ function readSample(event: NormalizedPipelineEvent): SimulatedSampleRecord {
 }
 
 function loadSimulatorState(): SimulatedBenchmarkState {
+  return loadSimulatorStateUnlocked();
+}
+
+function updateSimulatorState<T>(mutator: (state: SimulatedBenchmarkState) => T): T {
+  return withSimulatorStateLock(() => {
+    const state = loadSimulatorStateUnlocked();
+    const result = mutator(state);
+    saveSimulatorStateUnlocked(state);
+    return result;
+  });
+}
+
+function loadSimulatorStateUnlocked(): SimulatedBenchmarkState {
   const statePath = readSimulatorStatePath();
   try {
     const parsed = JSON.parse(readFileSync(statePath, "utf8")) as unknown;
@@ -287,12 +305,37 @@ function loadSimulatorState(): SimulatedBenchmarkState {
   throw new Error(`Simulated benchmark state is not a JSON object: ${statePath}`);
 }
 
-function saveSimulatorState(state: SimulatedBenchmarkState): void {
+function saveSimulatorStateUnlocked(state: SimulatedBenchmarkState): void {
   const statePath = readSimulatorStatePath();
   mkdirSync(dirname(statePath), { recursive: true });
   const tempPath = `${statePath}.${process.pid}.${randomUUID()}.tmp`;
   writeFileSync(tempPath, `${JSON.stringify(state, null, 2)}\n`);
   renameSync(tempPath, statePath);
+}
+
+function withSimulatorStateLock<T>(callback: () => T): T {
+  const lockPath = `${readSimulatorStatePath()}.lock`;
+  const deadline = Date.now() + 30_000;
+  for (;;) {
+    try {
+      mkdirSync(lockPath);
+      break;
+    } catch (error) {
+      if (!isNodeError(error) || error.code !== "EEXIST" || Date.now() > deadline) {
+        throw error;
+      }
+      sleepSync(25);
+    }
+  }
+  try {
+    return callback();
+  } finally {
+    rmSync(lockPath, { recursive: true, force: true });
+  }
+}
+
+function sleepSync(ms: number): void {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
 }
 
 function readSimulatorStatePath(): string {
@@ -328,14 +371,6 @@ async function createArchive(repoRoot: string): Promise<Buffer> {
   } finally {
     rmSync(tempRoot, { recursive: true, force: true });
   }
-}
-
-function nextPullRequestNumber(): number {
-  const state = loadSimulatorState();
-  const number = state.nextPullRequestNumber ?? 1;
-  state.nextPullRequestNumber = number + 1;
-  saveSimulatorState(state);
-  return number;
 }
 
 function materializeCheckRoot(sample: SimulatedSampleRecord): string {

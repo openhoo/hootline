@@ -684,7 +684,7 @@ function buildTextReplacement(
     const matches = countOccurrences(current, variant.expected);
     if (matches === 1) {
       return {
-        content: current.replace(variant.expected, variant.replacement),
+        content: current.replace(variant.expected, () => variant.replacement),
         strategy: variant.strategy,
       };
     }

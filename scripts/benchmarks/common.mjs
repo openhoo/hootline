@@ -90,16 +90,17 @@ export function shouldRedeliverRepairAttempt(attempt) {
 export function summarizeRows(rows) {
   const counts = {};
   const byComplexity = {};
+  const byTag = {};
+  const byMutationCount = {};
   const failureKinds = {};
   const failedTools = {};
   for (const row of rows) {
     counts[row.status] = (counts[row.status] ?? 0) + 1;
-    const complexity = row.scenarioComplexity ?? "unknown";
-    const group = byComplexity[complexity] ?? { total: 0, publishedGreen: 0, counts: {} };
-    group.total += 1;
-    group.counts[row.status] = (group.counts[row.status] ?? 0) + 1;
-    if (row.status === "published_green") group.publishedGreen += 1;
-    byComplexity[complexity] = group;
+    recordSummaryGroup(byComplexity, row.scenarioComplexity ?? "unknown", row);
+    for (const tag of row.scenarioTags ?? []) {
+      recordSummaryGroup(byTag, tag, row);
+    }
+    recordSummaryGroup(byMutationCount, String(row.scenarioMutationCount ?? 1), row);
     if (row.status !== "published_green" && row.status !== "dry_run" && row.sessionFailureKind !== undefined) {
       failureKinds[row.sessionFailureKind] = (failureKinds[row.sessionFailureKind] ?? 0) + 1;
     }
@@ -107,9 +108,9 @@ export function summarizeRows(rows) {
       failedTools[tool] = (failedTools[tool] ?? 0) + 1;
     }
   }
-  for (const group of Object.values(byComplexity)) {
-    group.publishedGreenRate = group.total === 0 ? 0 : group.publishedGreen / group.total;
-  }
+  finalizeSummaryGroups(byComplexity);
+  finalizeSummaryGroups(byTag);
+  finalizeSummaryGroups(byMutationCount);
   const publishedGreen = rows.filter((row) => row.status === "published_green").length;
   return {
     total: rows.length,
@@ -129,6 +130,8 @@ export function summarizeRows(rows) {
         ? 0
         : rows.reduce((total, row) => total + (row.providerErrorRetriesUsed ?? 0), 0) / rows.length,
     byComplexity,
+    byTag,
+    byMutationCount,
     failureKinds,
     failedTools,
   };
@@ -174,4 +177,18 @@ function countValues(values) {
   const counts = {};
   for (const value of values) counts[value] = (counts[value] ?? 0) + 1;
   return counts;
+}
+
+function recordSummaryGroup(groups, key, row) {
+  const group = groups[key] ?? { total: 0, publishedGreen: 0, counts: {} };
+  group.total += 1;
+  group.counts[row.status] = (group.counts[row.status] ?? 0) + 1;
+  if (row.status === "published_green") group.publishedGreen += 1;
+  groups[key] = group;
+}
+
+function finalizeSummaryGroups(groups) {
+  for (const group of Object.values(groups)) {
+    group.publishedGreenRate = group.total === 0 ? 0 : group.publishedGreen / group.total;
+  }
 }

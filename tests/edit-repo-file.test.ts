@@ -99,6 +99,43 @@ test("edit_repo_file selects the only replacement alias that yields a valid edit
   }
 });
 
+test("edit_repo_file writes replacement text with dollar signs literally", async () => {
+  const previousStatePath = process.env.HOOTLINE_STATE_PATH;
+  const root = mkdtempSync(join(tmpdir(), "hootline-edit-tool-"));
+  const statePath = join(root, "state.json");
+  process.env.HOOTLINE_STATE_PATH = statePath;
+  const event = makeEvent();
+  const policy = makePolicy();
+  const attempt = recordAttempt(statePath, event, policy);
+  updateAttempt(statePath, attempt.key, { repoStagedAt: "2026-06-30T10:00:00.000Z" });
+  const sandbox = new FakeSandbox();
+  const expected = "  return `$${cents / 100}`;";
+  const replacement = "  return `$${(cents / 100).toFixed(2)}`;";
+  sandbox.textFiles.set("repo/src/money.js", `export function formatCents(cents) {\n${expected}\n}\n`);
+  await writeSnapshotMarker(sandbox, attempt);
+  const ctx = makeCtx(event, sandbox);
+
+  try {
+    const output = (await editRepoFileTool.execute(
+      {
+        path: "src/money.js",
+        expected,
+        replacement,
+      },
+      ctx,
+    )) as Record<string, unknown>;
+
+    assert.equal(output.edited, true);
+    assert.equal(
+      sandbox.textFiles.get("repo/src/money.js"),
+      `export function formatCents(cents) {\n${replacement}\n}\n`,
+    );
+  } finally {
+    restoreEnv("HOOTLINE_STATE_PATH", previousStatePath);
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("edit_repo_file returns diagnostics when replacement aliases are ambiguous", async () => {
   const previousStatePath = process.env.HOOTLINE_STATE_PATH;
   const root = mkdtempSync(join(tmpdir(), "hootline-edit-tool-"));

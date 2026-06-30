@@ -29,6 +29,18 @@ export const SCENARIOS = [
     expectedRepairFile: "src/promotions.js",
   }),
   scenario({
+    id: "unknown-promotion-no-discount",
+    title: "unknown promotion codes do not create discounts",
+    complexity: "basic",
+    tags: ["promotions", "fallbacks"],
+    sourcePath: "src/promotions.js",
+    passingText: "  return PROMOTIONS[normalizedCode] ?? null;",
+    failingText: "  return PROMOTIONS[normalizedCode] ?? PROMOTIONS.COFFEE10;",
+    commitMessage: "Reproduce failing unknown promotion pipeline",
+    expectedFailure: "unknown promotion codes do not create discounts",
+    expectedRepairFile: "src/promotions.js",
+  }),
+  scenario({
     id: "mixed-cart-shipping",
     title: "mixed physical and digital carts still need physical shipping",
     complexity: "basic",
@@ -38,6 +50,18 @@ export const SCENARIOS = [
     failingText: "  const allDigital = lines.some((line) => line.weightOunces === 0);",
     commitMessage: "Reproduce failing mixed-cart shipping pipeline",
     expectedFailure: "mixed physical and digital carts",
+    expectedRepairFile: "src/orders.js",
+  }),
+  scenario({
+    id: "default-destination-tax-free",
+    title: "default checkout destination stays tax-free Oregon",
+    complexity: "basic",
+    tags: ["orders", "tax", "defaults"],
+    sourcePath: "src/orders.js",
+    passingText: `  destinationState = "OR",`,
+    failingText: `  destinationState = "WA",`,
+    commitMessage: "Reproduce failing default destination tax pipeline",
+    expectedFailure: "default destination remains tax-free Oregon",
     expectedRepairFile: "src/orders.js",
   }),
   scenario({
@@ -53,6 +77,18 @@ export const SCENARIOS = [
     expectedRepairFile: "src/money.js",
   }),
   scenario({
+    id: "format-cents-two-decimals",
+    title: "money formatting preserves two decimal places",
+    complexity: "basic",
+    tags: ["money", "formatting"],
+    sourcePath: "src/money.js",
+    passingText: '  return `$${(cents / 100).toFixed(2)}`;',
+    failingText: "  return `$${cents / 100}`;",
+    commitMessage: "Reproduce failing money formatting pipeline",
+    expectedFailure: "money formatting keeps two decimal places",
+    expectedRepairFile: "src/money.js",
+  }),
+  scenario({
     id: "express-shipping-not-free",
     title: "express shipping is never made free by the standard threshold",
     complexity: "intermediate",
@@ -64,6 +100,18 @@ export const SCENARIOS = [
     shippingBasisCents >= FREE_SHIPPING_THRESHOLD_CENTS;`,
     commitMessage: "Reproduce failing express shipping pipeline",
     expectedFailure: "express shipping even when standard shipping would be free",
+    expectedRepairFile: "src/shipping.js",
+  }),
+  scenario({
+    id: "unknown-shipping-service-defaults-standard",
+    title: "unknown shipping service levels fall back to standard shipping",
+    complexity: "intermediate",
+    tags: ["shipping", "fallbacks"],
+    sourcePath: "src/shipping.js",
+    passingText: "  const service = SHIPPING_RATES[serviceLevel] ?? SHIPPING_RATES.standard;",
+    failingText: "  const service = SHIPPING_RATES[serviceLevel];",
+    commitMessage: "Reproduce failing unknown shipping service pipeline",
+    expectedFailure: "unknown shipping service levels fall back to standard shipping",
     expectedRepairFile: "src/shipping.js",
   }),
   scenario({
@@ -115,6 +163,18 @@ export const SCENARIOS = [
     expectedRepairFile: "src/receipt.js",
   }),
   scenario({
+    id: "receipt-discount-line-negative",
+    title: "receipt discount lines show discounts as negative amounts",
+    complexity: "intermediate",
+    tags: ["receipt", "formatting"],
+    sourcePath: "src/receipt.js",
+    passingText: "    `Discount -${formatCents(order.totals.discountCents)}`,",
+    failingText: "    `Discount ${formatCents(order.totals.discountCents)}`,",
+    commitMessage: "Reproduce failing receipt discount pipeline",
+    expectedFailure: "receipt discount line shows a negative discount",
+    expectedRepairFile: "src/receipt.js",
+  }),
+  scenario({
     id: "tax-rate-state-lookup",
     title: "tax calculation uses the destination state's configured rate",
     complexity: "intermediate",
@@ -124,6 +184,18 @@ export const SCENARIOS = [
     failingText: "  const taxRatePercent = TAX_RATES_BY_STATE.OR;",
     commitMessage: "Reproduce failing destination tax lookup pipeline",
     expectedFailure: "rounds percentage calculations to the nearest cent",
+    expectedRepairFile: "src/tax.js",
+  }),
+  scenario({
+    id: "unknown-tax-state-zero",
+    title: "unknown destination states default to zero tax",
+    complexity: "basic",
+    tags: ["tax", "fallbacks"],
+    sourcePath: "src/tax.js",
+    passingText: "  return percentageOfCents(taxableSubtotalCents, taxRatePercent ?? 0);",
+    failingText: "  return percentageOfCents(taxableSubtotalCents, taxRatePercent);",
+    commitMessage: "Reproduce failing unknown destination tax pipeline",
+    expectedFailure: "unknown destination states default to zero tax",
     expectedRepairFile: "src/tax.js",
   }),
   scenario({
@@ -144,6 +216,18 @@ export const SCENARIOS = [
   }),`,
     commitMessage: "Reproduce failing BREWCLUB threshold pipeline",
     expectedFailure: "normalizes promotion codes before lookup",
+    expectedRepairFile: "src/promotions.js",
+  }),
+  scenario({
+    id: "promotion-threshold-inclusive",
+    title: "promotion minimum thresholds are inclusive",
+    complexity: "intermediate",
+    tags: ["promotions", "boundaries"],
+    sourcePath: "src/promotions.js",
+    passingText: "  if (subtotalCents < promotion.minimumSubtotalCents) return 0;",
+    failingText: "  if (subtotalCents <= promotion.minimumSubtotalCents) return 0;",
+    commitMessage: "Reproduce failing inclusive promotion threshold pipeline",
+    expectedFailure: "promotion thresholds are inclusive",
     expectedRepairFile: "src/promotions.js",
   }),
   scenario({
@@ -238,6 +322,90 @@ export const SCENARIOS = [
     expectedFailure: "mixed physical, digital, and express shipping regressions",
     expectedRepairFiles: ["src/orders.js", "src/catalog.js", "src/shipping.js"],
   }),
+  scenario({
+    id: "promotion-shipping-boundary-cascade",
+    title: "promotion threshold and shipping threshold boundaries recover together",
+    complexity: "complex",
+    tags: ["promotions", "shipping", "boundaries", "multi-file"],
+    mutations: [
+      {
+        sourcePath: "src/promotions.js",
+        passingText: "  if (subtotalCents < promotion.minimumSubtotalCents) return 0;",
+        failingText: "  if (subtotalCents <= promotion.minimumSubtotalCents) return 0;",
+      },
+      {
+        sourcePath: "src/shipping.js",
+        passingText: "  const shippingBasisCents = merchandiseSubtotalCents;",
+        failingText: "  const shippingBasisCents = discountedSubtotalCents;",
+      },
+    ],
+    commitMessage: "Reproduce failing promotion shipping boundary cascade",
+    expectedFailure: "promotion and shipping threshold boundary regressions",
+    expectedRepairFiles: ["src/promotions.js", "src/shipping.js"],
+  }),
+  scenario({
+    id: "presentation-and-money-cascade",
+    title: "receipt presentation and money formatting recover together",
+    complexity: "complex",
+    tags: ["receipt", "money", "formatting", "multi-file"],
+    mutations: [
+      {
+        sourcePath: "src/money.js",
+        passingText: '  return `$${(cents / 100).toFixed(2)}`;',
+        failingText: "  return `$${cents / 100}`;",
+      },
+      {
+        sourcePath: "src/receipt.js",
+        passingText: "    `Discount -${formatCents(order.totals.discountCents)}`,",
+        failingText: "    `Discount ${formatCents(order.totals.discountCents)}`,",
+      },
+    ],
+    commitMessage: "Reproduce failing receipt and money formatting cascade",
+    expectedFailure: "money and receipt presentation regressions",
+    expectedRepairFiles: ["src/money.js", "src/receipt.js"],
+  }),
+  scenario({
+    id: "full-checkout-edge-cascade",
+    title: "checkout defaults, fallbacks, and formatting recover across the full edge path",
+    complexity: "advanced",
+    tags: ["orders", "promotions", "shipping", "tax", "money", "fallbacks", "defaults", "multi-file"],
+    mutations: [
+      {
+        sourcePath: "src/orders.js",
+        passingText: `  destinationState = "OR",`,
+        failingText: `  destinationState = "WA",`,
+      },
+      {
+        sourcePath: "src/promotions.js",
+        passingText: "  return PROMOTIONS[normalizedCode] ?? null;",
+        failingText: "  return PROMOTIONS[normalizedCode] ?? PROMOTIONS.COFFEE10;",
+      },
+      {
+        sourcePath: "src/shipping.js",
+        passingText: "  const service = SHIPPING_RATES[serviceLevel] ?? SHIPPING_RATES.standard;",
+        failingText: "  const service = SHIPPING_RATES[serviceLevel];",
+      },
+      {
+        sourcePath: "src/tax.js",
+        passingText: "  return percentageOfCents(taxableSubtotalCents, taxRatePercent ?? 0);",
+        failingText: "  return percentageOfCents(taxableSubtotalCents, taxRatePercent);",
+      },
+      {
+        sourcePath: "src/money.js",
+        passingText: '  return `$${(cents / 100).toFixed(2)}`;',
+        failingText: "  return `$${cents / 100}`;",
+      },
+    ],
+    commitMessage: "Reproduce failing full checkout edge cascade",
+    expectedFailure: "checkout default, fallback, and formatting regressions",
+    expectedRepairFiles: [
+      "src/orders.js",
+      "src/promotions.js",
+      "src/shipping.js",
+      "src/tax.js",
+      "src/money.js",
+    ],
+  }),
 ];
 
 export function scenarioIds() {
@@ -319,7 +487,7 @@ export function applyScenarioMutation(fixturePath, scenario) {
     const sourcePath = join(fixturePath, mutation.sourcePath);
     const source = sources.get(sourcePath) ?? readFileSync(sourcePath, "utf8");
     assertExactOccurrence(source, mutation.passingText, mutation.sourcePath, "passing text");
-    sources.set(sourcePath, source.replace(mutation.passingText, mutation.failingText));
+    sources.set(sourcePath, source.replace(mutation.passingText, () => mutation.failingText));
   }
   for (const [sourcePath, source] of sources) {
     writeFileSync(sourcePath, source);

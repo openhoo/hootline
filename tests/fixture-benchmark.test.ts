@@ -81,7 +81,7 @@ test("fixture scenarios replace exactly one passing source region", () => {
 test("fixture scenario selection supports all and rejects unknown ids", () => {
   assert.equal(resolveScenario("shipping-threshold-basis").sourcePath, "src/shipping.js");
   assert.equal(resolveScenarios("all").length, SCENARIOS.length);
-  assert.equal(SCENARIOS.length > 4, true);
+  assert.equal(SCENARIOS.length, 23);
   assert.deepEqual(
     resolveScenarios("shipping-threshold-basis,percentage-rounding").map(
       (scenario: { id: string }) => scenario.id,
@@ -93,6 +93,7 @@ test("fixture scenario selection supports all and rejects unknown ids", () => {
 
 test("complex fixture scenarios expose all mutated and expected repair files", () => {
   const scenario = resolveScenario("checkout-money-shipping-tax-cascade");
+  const advanced = resolveScenario("full-checkout-edge-cascade");
 
   assert.equal(scenario.complexity, "complex");
   assert.deepEqual(scenarioSourcePaths(scenario), ["src/money.js", "src/shipping.js", "src/tax.js"]);
@@ -100,6 +101,22 @@ test("complex fixture scenarios expose all mutated and expected repair files", (
     "src/money.js",
     "src/shipping.js",
     "src/tax.js",
+  ]);
+  assert.equal(advanced.complexity, "advanced");
+  assert.equal(scenarioMutations(advanced).length, 5);
+  assert.deepEqual(scenarioSourcePaths(advanced), [
+    "src/orders.js",
+    "src/promotions.js",
+    "src/shipping.js",
+    "src/tax.js",
+    "src/money.js",
+  ]);
+  assert.deepEqual(scenarioExpectedRepairFiles(advanced), [
+    "src/orders.js",
+    "src/promotions.js",
+    "src/shipping.js",
+    "src/tax.js",
+    "src/money.js",
   ]);
 });
 
@@ -135,6 +152,8 @@ test("simulated benchmark dry-run does not require a server or provider credenti
       "--dry-run",
       "--scenarios",
       "checkout-money-shipping-tax-cascade",
+      "--concurrency",
+      "2",
       "--repo",
       "owner/simulated",
     ],
@@ -142,6 +161,7 @@ test("simulated benchmark dry-run does not require a server or provider credenti
   );
 
   assert.match(output, /Mode: dry run/);
+  assert.match(output, /Concurrency: 2/);
   assert.match(output, /checkout-money-shipping-tax-cascade/);
   assert.match(output, /dry_run: 1/);
 });
@@ -377,6 +397,8 @@ test("benchmark summarizer finds latest attempt for a sha", () => {
       continuationsUsed: 1,
       providerErrorRetriesUsed: 1,
       scenarioComplexity: "complex",
+      scenarioTags: ["shipping", "tax"],
+      scenarioMutationCount: 3,
       sessionFailureKind: "provider_error",
       failedTools: ["edit_repo_file"],
     },
@@ -390,6 +412,24 @@ test("benchmark summarizer finds latest attempt for a sha", () => {
   assert.equal(summary.averageProviderErrorRetries, 1);
   assert.deepEqual(summary.failureKinds, {});
   assert.deepEqual(summary.byComplexity.complex, {
+    total: 1,
+    publishedGreen: 1,
+    counts: { published_green: 1 },
+    publishedGreenRate: 1,
+  });
+  assert.deepEqual(summary.byTag.shipping, {
+    total: 1,
+    publishedGreen: 1,
+    counts: { published_green: 1 },
+    publishedGreenRate: 1,
+  });
+  assert.deepEqual(summary.byTag.tax, {
+    total: 1,
+    publishedGreen: 1,
+    counts: { published_green: 1 },
+    publishedGreenRate: 1,
+  });
+  assert.deepEqual(summary.byMutationCount["3"], {
     total: 1,
     publishedGreen: 1,
     counts: { published_green: 1 },
