@@ -53,7 +53,7 @@ const server = createServer(async (req, res) => {
       console.log(`\nGitHub App created: ${result.html_url ?? result.name ?? result.slug ?? result.id}`);
       console.log(`Credentials written to: ${written.envPath}`);
       if (result.slug) {
-        console.log(`Install it on the fixture repo: https://github.com/apps/${result.slug}/installations/new`);
+        console.log(`Install it on the target repository: https://github.com/apps/${result.slug}/installations/new`);
       }
       console.log("Stop this helper with Ctrl-C after installing the app.\n");
     } catch (error) {
@@ -166,7 +166,7 @@ function renderSuccessPage({ result, written }) {
   <body>
     <h1>GitHub App Created</h1>
     <p>Credentials were written to <code>${escapeHtml(written.envPath)}</code>.</p>
-    ${installUrl ? `<p><a href="${escapeHtml(installUrl)}">Install the app on the fixture repo</a></p>` : ""}
+    ${installUrl ? `<p><a href="${escapeHtml(installUrl)}">Install the app on the target repository</a></p>` : ""}
     <p>Use <code>source ${escapeHtml(written.envPath)}</code> before starting Hootline.</p>
   </body>
 </html>`;

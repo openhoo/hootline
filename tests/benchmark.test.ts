@@ -17,7 +17,6 @@ import test from "node:test";
 
 const scenarioModule = await import(new URL("../scripts/fixture-scenarios.mjs", import.meta.url).href);
 const benchmarkModule = await import(new URL("../scripts/benchmarks/common.mjs", import.meta.url).href);
-const fixtureBenchmarkModule = await import(new URL("../scripts/fixture-benchmark.mjs", import.meta.url).href);
 const simulatedAppModule = await import(new URL("../scripts/benchmarks/simulated-app.mjs", import.meta.url).href);
 
 const {
@@ -37,10 +36,6 @@ const {
   summarizeImprovementSignals,
   summarizeRows,
 } = benchmarkModule;
-const {
-  extractGitHubDeliveryDatabaseId,
-  summarizeStatusCheckRollup,
-} = fixtureBenchmarkModule;
 const {
   loadBenchmarkEnvFiles,
   parseDotEnv,
@@ -118,28 +113,6 @@ test("complex fixture scenarios expose all mutated and expected repair files", (
     "src/tax.js",
     "src/money.js",
   ]);
-});
-
-test("fixture reset dry-run does not require a live fixture repository", () => {
-  const scriptPath = fileURLToPath(new URL("../scripts/reset-pipeline-fixture.mjs", import.meta.url));
-  const repoRoot = fileURLToPath(new URL("..", import.meta.url));
-  const output = execFileSync(
-    process.execPath,
-    [
-      scriptPath,
-      "--dry-run",
-      "--scenario",
-      "checkout-money-shipping-tax-cascade",
-      "--fixture-path",
-      "/tmp/hootline-missing-fixture",
-      "--repo",
-      "owner/missing",
-    ],
-    { cwd: repoRoot, encoding: "utf8" },
-  );
-
-  assert.match(output, /Mode: dry run/);
-  assert.match(output, /src\/money.js, src\/shipping.js, src\/tax.js/);
 });
 
 test("simulated benchmark dry-run does not require a server or provider credentials", () => {
@@ -305,41 +278,6 @@ test("benchmark helpers classify attempt and PR check outcomes", () => {
     }),
     "comment_posted",
   );
-
-  assert.equal(
-    summarizeStatusCheckRollup([
-      { name: "Node test", status: "COMPLETED", conclusion: "SUCCESS" },
-    ]).conclusion,
-    "success",
-  );
-  assert.equal(
-    summarizeStatusCheckRollup([
-      { name: "Node test", status: "COMPLETED", conclusion: "FAILURE" },
-    ]).conclusion,
-    "failure",
-  );
-  assert.equal(summarizeStatusCheckRollup([]).conclusion, "pending");
-});
-
-test("benchmark redelivery lookup preserves large GitHub delivery ids", () => {
-  const deliveriesJson = `[
-    {"id":3828572433743355904,"guid":"9f032d90-7474-11f1-911f-3201a21d8018","event":"workflow_run"},
-    {"id":3828572433988747264,"guid":"9efa2ce0-7474-11f1-882b-42f326fa07ca","event":"check_suite"}
-  ]`;
-
-  assert.equal(
-    extractGitHubDeliveryDatabaseId(deliveriesJson, "9f032d90-7474-11f1-911f-3201a21d8018"),
-    "3828572433743355904",
-  );
-  assert.equal(
-    extractGitHubDeliveryDatabaseId(
-      `[{"id":3828572433743355904,"guid":"nested-guid","request":{"headers":{"id":1}}}]`,
-      "nested-guid",
-    ),
-    "3828572433743355904",
-  );
-  assert.equal(extractGitHubDeliveryDatabaseId(deliveriesJson, "missing"), undefined);
-  assert.equal(extractGitHubDeliveryDatabaseId("not json", "nested-guid"), undefined);
 });
 
 test("benchmark rows retain complex scenario metadata", () => {

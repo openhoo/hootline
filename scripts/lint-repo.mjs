@@ -37,14 +37,6 @@ const checks = [
     pattern: /@ts-ignore/g,
     message: "Use a typed boundary or @ts-expect-error with a specific reason instead of @ts-ignore.",
   },
-  {
-    pattern: /wakemeup0\/hootline-pipeline-fixture/g,
-    message: "Do not bake a personal fixture repository slug into tracked files.",
-  },
-  {
-    pattern: /^### Latest Live Benchmark$/gm,
-    message: "Keep time-stamped live benchmark snapshots out of README.md.",
-  },
 ];
 
 const failures = [];

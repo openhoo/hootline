@@ -28,21 +28,17 @@ operator tooling, benchmark infrastructure, tests, or documentation.
 
 - `benchmarks/fixtures/pipeline-repo/`: local commerce fixture used by the
   simulated provider benchmark.
-- `scripts/fixture-scenarios.mjs`: scenario catalog and mutation helpers shared
-  by simulated and live benchmark paths.
+- `scripts/fixture-scenarios.mjs`: scenario catalog and mutation helpers for
+  simulated benchmark scenarios.
 - `scripts/simulated-benchmark.mjs`: primary benchmark CLI. It runs Hootline
   against an isolated local Eve app workspace and the simulated GitHub provider.
-- `scripts/fixture-benchmark.mjs`: live GitHub fixture benchmark CLI. It owns
-  real fixture reset, GitHub polling, and webhook redelivery.
 - `scripts/benchmarks/common.mjs`: shared benchmark row, status, summary, and
-  retry-boundary helpers. Simulated code should import this instead of importing
-  the live fixture CLI.
+  retry-boundary helpers.
 - `scripts/benchmarks/simulated-app.mjs`: simulated benchmark app-workspace and
   env-file loading helpers.
 
 The simulated benchmark is the default validation path for framework or agent
-changes. The live fixture benchmark is reserved for provider-level confidence
-once the simulated benchmark is green.
+changes.
 
 ## Operating Boundaries
 
@@ -50,8 +46,6 @@ once the simulated benchmark is green.
   publishing, and merge/rerun side effects inside trusted runtime code.
 - Keep model-visible tools deterministic and small. A tool should not own repair
   orchestration or provider retry policy.
-- Keep benchmark helpers that are safe for both simulated and live runs in
-  `scripts/benchmarks/`. Live GitHub fixture behavior stays in
-  `scripts/fixture-benchmark.mjs`.
+- Keep shared benchmark helpers in `scripts/benchmarks/`.
 - Keep generated Eve/build/runtime data out of source. `.eve/`, `.output/`,
   `.workflow-data/`, and `var/` are ignored local artifacts.

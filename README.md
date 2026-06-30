@@ -320,53 +320,12 @@ The generated app requests repository permissions for Actions write, Checks
 read, Contents write, Issues write, Metadata read, and Pull requests write. It
 subscribes to `workflow_run` and `check_suite` events.
 
-## Pipeline Fixture Reset
-
-The `openhoo/hootline-pipeline-fixture` repo is reset through a destructive,
-repeatable workflow so every end-to-end test starts from the same repairable
-state. The default baseline is tag `hootline-fixture-baseline-v3`; it contains a
-passing commerce pricing app plus `.hootline.yaml`.
-
-Preview the reset plan:
-
-```sh
-npm run fixture:reset -- --dry-run
-```
-
-Run the default scenario reset:
-
-```sh
-npm run fixture:reset -- --yes
-```
-
-Run a specific scenario:
-
-```sh
-npm run fixture:reset -- --scenario promotion-code-normalization --yes
-```
-
-The workflow:
-
-- closes all open PRs in the fixture repo;
-- deletes remote `hootline/fix/*` branches;
-- force-pushes fixture `main` back to the baseline commit;
-- verifies the baseline with `npm run verify`;
-- injects one private scenario from `scripts/fixture-scenarios.mjs`, which may
-  mutate one or more source files;
-- verifies the scenario fails the fixture tests;
-- commits and pushes the fresh failing `main` commit.
-
-Defaults can be overridden with `HOOTLINE_FIXTURE_REPO`,
-`HOOTLINE_FIXTURE_PATH`, `HOOTLINE_FIXTURE_BASELINE_REF`,
-`HOOTLINE_FIXTURE_MAIN_BRANCH`, `HOOTLINE_FIXTURE_FIX_BRANCH_PREFIX`, and
-`HOOTLINE_FIXTURE_SCENARIO`.
-
 ## Simulated Benchmark
 
 `benchmark:sim` is the primary benchmark path for agent and harness changes. It
 runs the full Eve repair loop against a simulated GitHub provider, so it does
 not reset a real repository, call `gh`, wait on GitHub Actions, or require a
-public webhook tunnel. The runner materializes a local fixture repo from
+public webhook tunnel. The runner materializes a local benchmark repo from
 `benchmarks/fixtures/pipeline-repo`, injects the selected scenario, sends a
 signed synthetic `workflow_run` webhook to Hootline, and records the simulated
 PR/check result under `var/simulated-benchmarks/`.
@@ -402,57 +361,19 @@ is supplied. For auto-started servers it sets
 `GITHUB_WEBHOOK_SECRET` for the child process. When using `--server-url`, start
 the server yourself with matching env values.
 
-Rows preserve the live benchmark fields and add simulated repair file/check
-metadata, including actual changed files, expected-vs-actual repair file match,
-and simulated branch check conclusion. Shared row/status/summary helpers live in
-`scripts/benchmarks/common.mjs`; the simulated runner should not import the live
-fixture benchmark CLI for common behavior.
+Rows include repair metadata and simulated PR/check details, including actual
+changed files, expected-vs-actual repair file match, and simulated branch check
+conclusion. Shared row/status/summary helpers live in
+`scripts/benchmarks/common.mjs`.
 
-`--concurrency` applies only to the simulated benchmark. The live fixture
-benchmark intentionally runs sequentially because each sample resets and pushes
-the same fixture repository.
+The benchmark waits for Hootline to publish or terminate the repair attempt,
+waits for simulated fixer PR checks when a PR is opened, and records attempt
+count, tool sequence, failed tools, continuation count, token usage, terminal
+action, PR URL, PR check result, scenario complexity, scenario tags, mutation
+count, the expected repair file set, summary breakdowns by complexity, tag, and
+mutation count, and non-green improvement signals.
 
-## Fixture Benchmark
-
-`fixture:benchmark` runs the repairable fixture scenarios sequentially against a
-live GitHub fixture repository and writes local artifacts under
-`var/fixture-benchmarks/`. Use it for occasional provider-level validation after
-the simulated benchmark is healthy.
-Start Hootline with the same state path you pass to the benchmark:
-
-```sh
-set -a
-source .env.local
-source var/github-app/<app-slug>.env
-export HOOTLINE_STATE_PATH=var/fixture-benchmark-state.json
-set +a
-npm run dev -- --host 127.0.0.1 --port 3000
-```
-
-In another shell with the same GitHub App env loaded:
-
-```sh
-npm run fixture:benchmark -- --dry-run
-npm run fixture:benchmark -- --scenarios all --samples 1 --state-path var/fixture-benchmark-state.json --yes
-npm run fixture:benchmark -- --scenarios checkout-money-shipping-tax-cascade --samples 3 --state-path var/fixture-benchmark-state.json --yes
-```
-
-Dry runs enumerate every selected scenario and reset step without contacting
-GitHub or requiring a fixture checkout. Live `--yes` runs require the GitHub App
-webhook to point at the running Hootline server, usually through the quick
-tunnel below.
-
-The benchmark waits for the pushed fixture workflow to fail, waits for Hootline
-to publish or terminate the repair attempt, waits for fixer PR checks when a PR
-is opened, and records attempt count, tool sequence, failed tools, continuation
-count, token usage, terminal action, PR URL, PR check result, scenario
-complexity, scenario tags, mutation count, the expected repair file set, summary
-breakdowns by complexity, tag, and mutation count, and non-green improvement
-signals. If a repair attempt terminates without publishing and policy still
-allows another attempt, the runner asks GitHub to redeliver the App webhook once
-more.
-
-Scenario ids are listed by `npm run fixture:benchmark -- --help`. The catalog
+Scenario ids are listed by `npm run benchmark:sim -- --help`. The catalog
 includes single-module regressions for shipping, promotions, tax, catalog,
 money, receipt, defaults, fallbacks, boundaries, and formatting behavior, plus
 multi-file cascade scenarios that force the repair agent to reconcile several
@@ -587,8 +508,7 @@ npm test
 npm run check:model-matrix
 npm exec --yes @openhoo/hooversion@0.1.1 -- plan
 docker build -t ghcr.io/openhoo/hootline:local .
-npm run fixture:reset -- --dry-run
-npm run fixture:benchmark -- --dry-run
+npm run benchmark:sim:dry-run
 npm run session:inspect -- <session-id>
 npm run github-app:setup -- --help
 ```
