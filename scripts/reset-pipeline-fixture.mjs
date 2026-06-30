@@ -27,7 +27,7 @@ const DEFAULTS = {
     "main",
   repo:
     process.env.HOOTLINE_FIXTURE_REPO ??
-    "wakemeup0/hootline-pipeline-fixture",
+    "openhoo/hootline-pipeline-fixture",
   scenario:
     process.env.HOOTLINE_FIXTURE_SCENARIO ??
     DEFAULT_SCENARIO_ID,

@@ -1,26 +1,18 @@
 import type { UnknownRecord } from "./unknown.ts";
 
-const ATTEMPT_KEY_MAX = 512;
 const SUMMARY_MAX = 4000;
 const COMMENT_BODY_MAX = 4000;
 const REASON_MAX = 1000;
 
-const attemptKeyProp = {
-  attemptKey: { type: "string", minLength: 1, maxLength: ATTEMPT_KEY_MAX },
-} as const;
-
 export const optionalAttemptKeySchema = {
   type: "object",
-  properties: {
-    ...attemptKeyProp,
-  },
+  properties: {},
   additionalProperties: false,
 } as const;
 
 export const summarySchema = {
   type: "object",
   properties: {
-    ...attemptKeyProp,
     summary: { type: "string", minLength: 1, maxLength: SUMMARY_MAX },
   },
   required: ["summary"],
@@ -30,7 +22,6 @@ export const summarySchema = {
 export const commentSchema = {
   type: "object",
   properties: {
-    ...attemptKeyProp,
     body: { type: "string", minLength: 1, maxLength: COMMENT_BODY_MAX },
   },
   required: ["body"],
@@ -40,7 +31,6 @@ export const commentSchema = {
 export const rerunSchema = {
   type: "object",
   properties: {
-    ...attemptKeyProp,
     reason: { type: "string", minLength: 1, maxLength: REASON_MAX },
   },
   required: ["reason"],
@@ -50,7 +40,6 @@ export const rerunSchema = {
 export const mergeSchema = {
   type: "object",
   properties: {
-    ...attemptKeyProp,
     confirmedSuccessfulPipeline: { type: "boolean", default: false },
   },
   additionalProperties: false,

@@ -427,8 +427,12 @@ function requestBinaryWithCap(
       const location = res.headers.location;
       if (location && isRedirectStatus(statusCode) && redirectsRemaining > 0) {
         res.resume();
-        const nextUrl = new URL(location, parsed).toString();
-        requestBinaryWithCap(nextUrl, headers, timeoutMs, maxBytes, redirectsRemaining - 1).then(resolve, reject);
+        const next = new URL(location, parsed);
+        const nextHeaders = redirectHeaders(parsed, next, headers);
+        requestBinaryWithCap(next.toString(), nextHeaders, timeoutMs, maxBytes, redirectsRemaining - 1).then(
+          resolve,
+          reject,
+        );
         return;
       }
 
@@ -456,6 +460,22 @@ function requestBinaryWithCap(
 
 function isRedirectStatus(statusCode: number): boolean {
   return statusCode === 301 || statusCode === 302 || statusCode === 303 || statusCode === 307 || statusCode === 308;
+}
+
+function redirectHeaders(
+  current: URL,
+  next: URL,
+  headers: Record<string, string>,
+): Record<string, string> {
+  if (current.origin === next.origin) return headers;
+  return Object.fromEntries(
+    Object.entries(headers).filter(([name]) => !isSensitiveRedirectHeader(name)),
+  );
+}
+
+function isSensitiveRedirectHeader(name: string): boolean {
+  const normalized = name.toLowerCase();
+  return normalized === "authorization" || normalized === "private-token" || normalized === "cookie";
 }
 
 function isTimeoutError(error: unknown): boolean {

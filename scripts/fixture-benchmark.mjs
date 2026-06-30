@@ -22,7 +22,7 @@ const DEFAULTS = {
     "main",
   repo:
     process.env.HOOTLINE_FIXTURE_REPO ??
-    "wakemeup0/hootline-pipeline-fixture",
+    "openhoo/hootline-pipeline-fixture",
   serverUrl: process.env.HOOTLINE_FIXTURE_SERVER_URL ?? "http://127.0.0.1:3000",
   statePath: process.env.HOOTLINE_STATE_PATH ?? "var/hootline-state.json",
   workflowTimeoutMs: readEnvInteger("HOOTLINE_FIXTURE_WORKFLOW_TIMEOUT_MS", 10 * 60 * 1000),

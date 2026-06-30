@@ -4,13 +4,14 @@ import { z } from "zod";
 import type { HootlineServiceConfig, Provider, RepoPolicy } from "./types.ts";
 
 const publishModeSchema = z.enum(["pr_mr", "push_branch", "auto_merge"]);
+const nonEmptyStringArraySchema = z.array(z.string().min(1)).min(1);
 
 const autoMergeSchema = z
   .object({
     deleteSourceBranch: z.boolean().default(false),
     requireSuccessfulPipeline: z.boolean().default(true),
   })
-  .default({});
+  .default({ deleteSourceBranch: false, requireSuccessfulPipeline: true });
 
 const repoPolicyFieldsSchema = z.object({
   mode: publishModeSchema.default("pr_mr"),
@@ -27,6 +28,9 @@ const repoPolicyFieldsSchema = z.object({
 
 const repoPolicyConfigSchema = repoPolicyFieldsSchema.extend({
   version: z.literal(1),
+  allowedBranches: nonEmptyStringArraySchema,
+  allowedFileGlobs: nonEmptyStringArraySchema,
+  verificationCommands: nonEmptyStringArraySchema,
 });
 
 export const repoPolicySchema = repoPolicyFieldsSchema.extend({

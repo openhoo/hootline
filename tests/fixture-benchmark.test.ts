@@ -4,12 +4,8 @@ import { dirname, join } from "node:path";
 import assert from "node:assert/strict";
 import test from "node:test";
 
-// The fixture harness is an executable .mjs script, intentionally outside the
-// TypeScript agent build. Import it dynamically for behavioral tests.
-// @ts-ignore no declaration file for script module
-const scenarioModule = await import("../scripts/fixture-scenarios.mjs");
-// @ts-ignore no declaration file for script module
-const benchmarkModule = await import("../scripts/fixture-benchmark.mjs");
+const scenarioModule = await import(new URL("../scripts/fixture-scenarios.mjs", import.meta.url).href);
+const benchmarkModule = await import(new URL("../scripts/fixture-benchmark.mjs", import.meta.url).href);
 
 const {
   SCENARIOS,

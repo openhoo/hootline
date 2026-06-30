@@ -64,6 +64,74 @@ Expose that daemon with your tunnel of choice and configure provider webhooks:
 - GitHub: `POST /eve/v1/ci/github`
 - GitLab: `POST /eve/v1/ci/gitlab`
 
+## Container Image
+
+Build the production image locally:
+
+```sh
+docker build -t ghcr.io/openhoo/hootline:local .
+```
+
+Eve compiles the selected model into the image at build time. Use build args
+when the image should route to a non-default provider:
+
+```sh
+docker build \
+  --build-arg HOOTLINE_MODEL_PROVIDER=openai-compatible \
+  --build-arg HOOTLINE_MODEL=cerebras/gemma-4-31b \
+  --build-arg HOOTLINE_MODEL_BASE_URL=https://api.cerebras.ai/v1 \
+  --build-arg HOOTLINE_MODEL_CONTEXT_WINDOW_TOKENS=65536 \
+  --build-arg HOOTLINE_MODEL_PROVIDER_NAME=cerebras \
+  -t ghcr.io/openhoo/hootline:local .
+```
+
+Run the image with runtime credentials and persistent service state:
+
+```sh
+docker run --rm \
+  -p 127.0.0.1:3000:3000 \
+  -v hootline-data:/data \
+  -e HOOTLINE_MODEL_API_KEY \
+  -e GITHUB_APP_ID \
+  -e GITHUB_APP_PRIVATE_KEY \
+  -e GITHUB_WEBHOOK_SECRET \
+  ghcr.io/openhoo/hootline:local
+```
+
+When repairs need Eve's local Docker sandbox backend, make the host Docker
+daemon available to the container:
+
+```sh
+docker run --rm \
+  -p 127.0.0.1:3000:3000 \
+  -v hootline-data:/data \
+  -v /var/run/docker.sock:/var/run/docker.sock \
+  --group-add "$(stat -c '%g' /var/run/docker.sock)" \
+  --env-file .env.local \
+  ghcr.io/openhoo/hootline:local
+```
+
+The image listens on `0.0.0.0:${PORT:-3000}`, persists Hootline state at
+`/data/hootline-state.json` by default, and exposes `/eve/v1/health` for Docker
+health checks. Do not pass real model or provider API keys as Docker build args;
+provide them only as runtime environment variables.
+
+## Release And GHCR Publishing
+
+CI runs typecheck, tests, model matrix validation, an Eve production build, a
+Docker build, and Conventional Commit linting through Hooversion. After CI
+passes on `main`, the release workflow runs Hooversion to derive the next
+semantic version from Conventional Commits, update `package.json`,
+`package-lock.json`, and `CHANGELOG.md`, create a GitHub release, then publish a
+multi-arch image to GitHub Container Registry.
+
+Published image tags:
+
+- `ghcr.io/openhoo/hootline:<version>`
+- `ghcr.io/openhoo/hootline:<major>.<minor>`
+- `ghcr.io/openhoo/hootline:sha-<commit>`
+- `ghcr.io/openhoo/hootline:latest`
+
 ## Environment
 
 Core settings:
@@ -156,10 +224,11 @@ repairs.
 Repository policy fields:
 
 - `mode`: `pr_mr`, `push_branch`, or `auto_merge`.
-- `allowedBranches`: event refs that may start repairs.
-- `allowedFileGlobs`: changed paths that `publish_fix` may publish.
-- `verificationCommands`: commands run inside `/workspace/repo` by
-  `run_repo_checks` and again by `publish_fix`.
+- `allowedBranches`: required event refs that may start repairs.
+- `allowedFileGlobs`: required changed paths that `publish_fix` may publish.
+- `verificationCommands`: required commands run inside `/workspace/repo` by
+  `run_repo_checks` and again by `publish_fix`. At least one command is
+  required so `publish_fix` cannot publish without a repository-defined check.
 - `sandboxNetworkAllow`: host allowlist for verification command network access.
   Empty means deny-all.
 - `fixBranchPrefix`: prefix for generated fixer branches.
@@ -176,7 +245,10 @@ Policy globs are intentionally small: `*` and `?` match within a path segment,
 while `**` may cross directories.
 
 Run a single Hootline process per state file. State writes are serialized inside
-one Node process; separate processes sharing the same state path can still race.
+one Node process; separate processes or replicas sharing the same state path can
+race delivery dedupe, repair-slot claims, and auto-merge claims. Use one
+container/replica per state file unless the state backend is replaced with a
+durable cross-process lock.
 
 ## GitHub App Setup
 
@@ -230,7 +302,7 @@ subscribes to `workflow_run` and `check_suite` events.
 
 ## Pipeline Fixture Reset
 
-The `wakemeup0/hootline-pipeline-fixture` repo is reset through a destructive,
+The `openhoo/hootline-pipeline-fixture` repo is reset through a destructive,
 repeatable workflow so every end-to-end test starts from the same repairable
 state. The default baseline is tag `hootline-fixture-baseline-v3`; it contains a
 passing commerce pricing app plus `.hootline.yaml`.
@@ -296,31 +368,6 @@ is opened, and records attempt count, tool sequence, failed tools, continuation
 count, token usage, terminal action, PR URL, and PR check result. If a repair
 attempt terminates without publishing and policy still allows another attempt,
 the runner asks GitHub to redeliver the App webhook once more.
-
-### Latest Live Benchmark
-
-The latest live GitHub fixture benchmark ran on June 30, 2026 against
-`wakemeup0/hootline-pipeline-fixture` using baseline
-`hootline-fixture-baseline-v3`.
-
-- Result: `4/4` repairable scenarios reached `published_green`.
-- Average attempts: `1.00`.
-- Average continuations: `0.00`.
-- Artifacts: `var/fixture-benchmarks/2026-06-30T08-11-34-290Z`.
-- State file: `var/fixture-benchmark-live-20260630T080944Z.json`.
-
-| Scenario | PR | Attempts | Continuations |
-| --- | ---: | ---: | ---: |
-| `shipping-threshold-basis` | #5 | 1 | 0 |
-| `promotion-code-normalization` | #6 | 1 | 0 |
-| `mixed-cart-shipping` | #7 | 1 | 0 |
-| `percentage-rounding` | #8 | 1 | 0 |
-
-The benchmark cleanup closed PRs #5-#7 while moving between scenarios. PR #8 was
-left open and green. The fixture repo `main` was left at the final intentional
-percentage-rounding failure (`1d58570`), so run `fixture:reset` before starting a
-fresh benchmark. The local dev server and Cloudflare tunnel were stopped after
-the run; update the GitHub App webhook URL before the next live run.
 
 ### Cloudflare Quick Tunnel
 
@@ -445,9 +492,12 @@ and repository policy.
 npm run dev -- --host 127.0.0.1 --port 3000
 npm run info
 npm run build
+npm run lint
 npm run typecheck
 npm test
 npm run check:model-matrix
+npm exec --yes @openhoo/hooversion@0.1.1 -- plan
+docker build -t ghcr.io/openhoo/hootline:local .
 npm run fixture:reset -- --dry-run
 npm run fixture:benchmark -- --dry-run
 npm run session:inspect -- <session-id>

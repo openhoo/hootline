@@ -39,9 +39,13 @@ export function resolveCurrentAttempt(
   attemptKey?: string,
 ): CurrentAttemptContext {
   const config = loadServiceConfig();
-  const key = attemptKey ?? readAttemptKey(ctx);
+  const key = readAttemptKey(ctx);
   if (key === undefined) {
-    throw new Error("No attemptKey was supplied and none was available in session auth.");
+    throw new Error("No attemptKey was available in session auth.");
+  }
+  const explicitKey = normalizeAttemptKey(attemptKey);
+  if (explicitKey !== undefined && explicitKey !== key) {
+    throw new Error("Tool attemptKey input does not match the authenticated session attempt.");
   }
   const attempt = getAttempt(config.statePath, key);
   if (attempt === undefined) {
@@ -85,6 +89,10 @@ export async function resolveStagedAttempt<S extends SnapshotReadySandbox>(
 
 function readAttemptKey(ctx: RuntimeContext): string | undefined {
   const value = ctx.session?.auth?.current?.attributes?.attemptKey;
+  return normalizeAttemptKey(value);
+}
+
+function normalizeAttemptKey(value: unknown): string | undefined {
   if (typeof value !== "string") return undefined;
   const trimmed = value.trim();
   return trimmed.length > 0 ? trimmed : undefined;

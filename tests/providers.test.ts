@@ -1,4 +1,5 @@
 import { generateKeyPairSync } from "node:crypto";
+import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import assert from "node:assert/strict";
 import test from "node:test";
 
@@ -40,6 +41,13 @@ test("GitHub reads repo config from the default branch and returns null for miss
   process.env.GITHUB_APP_PRIVATE_KEY = privateKey
     .export({ format: "pem", type: "pkcs8" })
     .toString();
+  const repoConfig = [
+    "version: 1",
+    "allowedBranches: [main]",
+    "allowedFileGlobs: [src/**]",
+    "verificationCommands: [npm test]",
+    "",
+  ].join("\n");
   globalThis.fetch = async (input, init = {}) => {
     const call = readCall(input, init);
     calls.push(call);
@@ -53,7 +61,7 @@ test("GitHub reads repo config from the default branch and returns null for miss
       return jsonResponse({
         type: "file",
         encoding: "base64",
-        content: Buffer.from("version: 1\nallowedBranches: [main]\n").toString("base64"),
+        content: Buffer.from(repoConfig).toString("base64"),
       });
     }
     if (call.path === "/repos/owner/repo/contents/missing.yaml?ref=trunk") {
@@ -66,7 +74,7 @@ test("GitHub reads repo config from the default branch and returns null for miss
     const provider = new GitHubProvider();
     assert.equal(
       await provider.readRepositoryFileFromDefaultBranch(makeGitHubEvent(), ".hootline.yaml"),
-      "version: 1\nallowedBranches: [main]\n",
+      repoConfig,
     );
     assert.equal(await provider.readRepositoryFileFromDefaultBranch(makeGitHubEvent(), "missing.yaml"), null);
     assert.equal(calls.some((call) => call.path === "/repos/owner/repo"), true);
@@ -84,6 +92,13 @@ test("GitLab reads repo config from the default branch and returns null for miss
 
   process.env.GITLAB_TOKEN = "glpat-secret";
   process.env.GITLAB_BASE_URL = "https://gitlab.example.test";
+  const repoConfig = [
+    "version: 1",
+    "allowedBranches: [main]",
+    "allowedFileGlobs: [src/**]",
+    "verificationCommands: [npm test]",
+    "",
+  ].join("\n");
   globalThis.fetch = async (input, init = {}) => {
     const call = readCall(input, init);
     if (call.path === "/api/v4/projects/55") {
@@ -92,7 +107,7 @@ test("GitLab reads repo config from the default branch and returns null for miss
     if (call.path === "/api/v4/projects/55/repository/files/.hootline.yaml?ref=main") {
       return jsonResponse({
         encoding: "base64",
-        content: Buffer.from("version: 1\nallowedBranches: [main]\n").toString("base64"),
+        content: Buffer.from(repoConfig).toString("base64"),
       });
     }
     if (call.path === "/api/v4/projects/55/repository/files/missing.yaml?ref=main") {
@@ -105,11 +120,46 @@ test("GitLab reads repo config from the default branch and returns null for miss
     const provider = new GitLabProvider();
     assert.equal(
       await provider.readRepositoryFileFromDefaultBranch(makeGitLabEvent(), ".hootline.yaml"),
-      "version: 1\nallowedBranches: [main]\n",
+      repoConfig,
     );
     assert.equal(await provider.readRepositoryFileFromDefaultBranch(makeGitLabEvent(), "missing.yaml"), null);
   } finally {
     globalThis.fetch = previousFetch;
+    restoreEnv("GITLAB_TOKEN", previousToken);
+    restoreEnv("GITLAB_BASE_URL", previousBaseUrl);
+  }
+});
+
+test("GitLab archive downloads do not forward private-token across redirected origins", async () => {
+  const previousToken = process.env.GITLAB_TOKEN;
+  const previousBaseUrl = process.env.GITLAB_BASE_URL;
+  let redirectedPrivateToken: string | string[] | undefined;
+  let targetUrl = "";
+
+  const target = await listenTestServer((req, res) => {
+    redirectedPrivateToken = req.headers["private-token"];
+    res.writeHead(200, {
+      "content-length": "7",
+      "content-type": "application/octet-stream",
+    });
+    res.end("archive");
+  });
+  const source = await listenTestServer((_req, res) => {
+    res.writeHead(302, { location: targetUrl });
+    res.end();
+  });
+
+  targetUrl = `${target.url}/archive.tar.gz`;
+  process.env.GITLAB_TOKEN = "glpat-secret";
+  process.env.GITLAB_BASE_URL = source.url;
+
+  try {
+    const archive = await new GitLabProvider().downloadArchive(makeGitLabEvent(), 1024);
+    assert.equal(archive.toString("utf8"), "archive");
+    assert.equal(redirectedPrivateToken, undefined);
+  } finally {
+    await source.close();
+    await target.close();
     restoreEnv("GITLAB_TOKEN", previousToken);
     restoreEnv("GITLAB_BASE_URL", previousBaseUrl);
   }
@@ -308,6 +358,27 @@ function jsonResponse(body: unknown, status = 200): Response {
     headers: { "content-type": "application/json" },
     status,
   });
+}
+
+async function listenTestServer(
+  handler: (req: IncomingMessage, res: ServerResponse) => void,
+): Promise<{ close: () => Promise<void>; url: string }> {
+  const server = createServer(handler);
+  await new Promise<void>((resolve) => {
+    server.listen(0, "127.0.0.1", resolve);
+  });
+  const address = server.address();
+  assert.ok(address !== null && typeof address === "object");
+  return {
+    url: `http://127.0.0.1:${address.port}`,
+    close: () =>
+      new Promise<void>((resolve, reject) => {
+        server.close((error) => {
+          if (error) reject(error);
+          else resolve();
+        });
+      }),
+  };
 }
 
 function makeGitHubEvent(): NormalizedPipelineEvent {

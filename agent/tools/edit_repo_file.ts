@@ -9,7 +9,6 @@ const log = createLogger("tools.edit_repo_file");
 const editRepoFileSchema = {
   type: "object",
   properties: {
-    attemptKey: { type: "string", minLength: 1, maxLength: 512 },
     path: { type: "string", minLength: 1, maxLength: 500 },
     expected: { type: "string", minLength: 1, maxLength: 50_000 },
     replacement: { type: "string", maxLength: 50_000 },

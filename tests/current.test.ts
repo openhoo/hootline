@@ -24,7 +24,7 @@ test("resolveCurrentAttempt reads the attemptKey from session auth attributes", 
   });
 });
 
-test("resolveCurrentAttempt prefers an explicit attemptKey over the session value", () => {
+test("resolveCurrentAttempt rejects an explicit attemptKey that differs from session auth", () => {
   withFixture(({ statePath }) => {
     const sessionEvent = makeEvent();
     const sessionKey = eventAttemptKey(sessionEvent);
@@ -43,8 +43,22 @@ test("resolveCurrentAttempt prefers an explicit attemptKey over the session valu
     assert.notEqual(explicitKey, sessionKey);
 
     const ctx = makeContext(sessionKey);
-    const resolved = resolveCurrentAttempt(ctx, explicitKey);
-    assert.equal(resolved.attempt.key, explicitKey);
+    assert.throws(
+      () => resolveCurrentAttempt(ctx, explicitKey),
+      /Tool attemptKey input does not match the authenticated session attempt\./,
+    );
+  });
+});
+
+test("resolveCurrentAttempt ignores a matching explicit attemptKey and uses session auth", () => {
+  withFixture(({ statePath }) => {
+    const event = makeEvent();
+    const key = eventAttemptKey(event);
+    recordAttempt(statePath, event, makePolicy());
+
+    const ctx = makeContext(key);
+    const resolved = resolveCurrentAttempt(ctx, key);
+    assert.equal(resolved.attempt.key, key);
   });
 });
 
@@ -53,7 +67,7 @@ test("resolveCurrentAttempt throws when no key is available anywhere", () => {
     const ctx = makeContext(undefined);
     assert.throws(
       () => resolveCurrentAttempt(ctx),
-      /No attemptKey was supplied and none was available in session auth\./,
+      /No attemptKey was available in session auth\./,
     );
   });
 });
@@ -63,7 +77,7 @@ test("resolveCurrentAttempt treats a whitespace-only attribute as absent", () =>
     const ctx = makeContext("   ");
     assert.throws(
       () => resolveCurrentAttempt(ctx),
-      /No attemptKey was supplied and none was available in session auth\./,
+      /No attemptKey was available in session auth\./,
     );
   });
 });

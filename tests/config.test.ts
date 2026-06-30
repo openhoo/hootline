@@ -25,7 +25,7 @@ test("loads Hootline service config from HOOTLINE_* env with defaults", () => {
   );
 });
 
-test("parses repo-local policy defaults and derives provider identity from the event", () => {
+test("parses repo-local policy defaults after required guardrails are explicit", () => {
   const policy = parseRepoPolicyConfig(
     [
       "version: 1",
@@ -69,5 +69,49 @@ test("rejects invalid repo-local policy config", () => {
   assert.throws(
     () => parseRepoPolicyConfig("version: [", { provider: "github", slug: "owner/repo" }),
     /not valid YAML/,
+  );
+});
+
+test("rejects repo-local policy that omits explicit branch, file, or verification guardrails", () => {
+  const identity = { provider: "github" as const, slug: "owner/repo" };
+
+  assert.throws(
+    () =>
+      parseRepoPolicyConfig(
+        [
+          "version: 1",
+          "allowedFileGlobs: [src/**]",
+          "verificationCommands: [npm test]",
+          "",
+        ].join("\n"),
+        identity,
+      ),
+    /Repository Hootline config is invalid/,
+  );
+  assert.throws(
+    () =>
+      parseRepoPolicyConfig(
+        [
+          "version: 1",
+          "allowedBranches: [main]",
+          "verificationCommands: [npm test]",
+          "",
+        ].join("\n"),
+        identity,
+      ),
+    /Repository Hootline config is invalid/,
+  );
+  assert.throws(
+    () =>
+      parseRepoPolicyConfig(
+        [
+          "version: 1",
+          "allowedBranches: [main]",
+          "allowedFileGlobs: [src/**]",
+          "",
+        ].join("\n"),
+        identity,
+      ),
+    /Repository Hootline config is invalid/,
   );
 });
