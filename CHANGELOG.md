@@ -1,5 +1,11 @@
 # hootline Changelog
 
+## 0.5.1 (2026-06-30)
+
+### Bug Fixes
+
+- harden repair safety and publish anchoring (abe328e)
+
 ## 0.5.0 (2026-06-30)
 
 ### Features
