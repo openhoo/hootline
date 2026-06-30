@@ -1,3 +1,5 @@
+import { createHash } from "node:crypto";
+
 import { defineTool } from "eve/tools";
 
 import { resolveStagedAttempt } from "../lib/current.ts";
@@ -20,6 +22,8 @@ const editRepoFileSchema = {
 
 const MAX_DIAGNOSTIC_LINES = 5;
 const MAX_DIAGNOSTIC_CHARS = 2_000;
+const MAX_EDIT_MISS_HISTORY = 1_000;
+const editMissCounts = new Map<string, number>();
 
 export default defineTool({
   description:
@@ -39,10 +43,21 @@ export default defineTool({
         replacement,
       });
       tlog.info({ path: result.path, beforeBytes: result.beforeBytes, afterBytes: result.afterBytes }, "file edited");
+      forgetEditMiss(attempt.key, path, expected, replacement);
       return { ...result, edited: true };
     } catch (error) {
       if (isRecoverableTextMatchError(error)) {
+        const missCount = recordEditMiss(attempt.key, path, expected, replacement);
         const diagnostics = await buildEditMissDiagnostics(sandbox, path, expected);
+        if (missCount > 1) {
+          tlog.warn(
+            { path: diagnostics.path, reason: "duplicate_expected_text_miss", missCount },
+            "edit_repo_file rejected duplicate missed edit",
+          );
+          throw new Error(
+            `Repeated edit_repo_file miss for ${diagnostics.path}. The same path, expected text, and replacement already failed to match. Read the current file and use exact current text before retrying.`,
+          );
+        }
         tlog.info(
           { path: diagnostics.path, reason: diagnostics.reason },
           "edit_repo_file did not edit: expected text was not uniquely matched",
@@ -61,6 +76,34 @@ export default defineTool({
 function isRecoverableTextMatchError(error: unknown): boolean {
   if (!(error instanceof Error)) return false;
   return /^expected text must occur exactly once in .+; found \d+\.$/.test(error.message);
+}
+
+function recordEditMiss(attemptKey: string, path: string, expected: string, replacement: string): number {
+  const signature = editMissSignature(attemptKey, path, expected, replacement);
+  const count = (editMissCounts.get(signature) ?? 0) + 1;
+  editMissCounts.set(signature, count);
+  pruneEditMissHistory();
+  return count;
+}
+
+function forgetEditMiss(attemptKey: string, path: string, expected: string, replacement: string): void {
+  editMissCounts.delete(editMissSignature(attemptKey, path, expected, replacement));
+}
+
+function editMissSignature(attemptKey: string, path: string, expected: string, replacement: string): string {
+  const hash = createHash("sha256")
+    .update(expected)
+    .update("\0")
+    .update(replacement)
+    .digest("hex")
+    .slice(0, 24);
+  return `${attemptKey}\0${compactRepoPath(path)}\0${hash}`;
+}
+
+function pruneEditMissHistory(): void {
+  if (editMissCounts.size <= MAX_EDIT_MISS_HISTORY) return;
+  const oldest = editMissCounts.keys().next().value;
+  if (typeof oldest === "string") editMissCounts.delete(oldest);
 }
 
 async function buildEditMissDiagnostics(

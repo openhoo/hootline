@@ -140,6 +140,20 @@ test("repair service retries retryable model provider failures inside the same r
   ];
   const fakeSend = async (message: unknown, options: unknown): Promise<unknown> => {
     sent.push({ message, options });
+    if (sent.length === 2) {
+      const [attempt] = Object.values(loadState(statePath).attempts);
+      assert.equal(attempt?.lastSessionStatus, "running");
+      assert.equal(attempt?.lastSessionId, undefined);
+      assert.equal(attempt?.lastSessionEndedAt, undefined);
+      assert.equal(attempt?.providerErrorRetriesUsed, 1);
+      assert.equal(attempt?.lastSessionFailureKind, "provider_error");
+      assert.match(attempt?.lastSessionFailure ?? "", /Retrying after provider error \(1\)/);
+      assert.deepEqual(attempt?.lastToolSequence, [
+        "stage_repository_snapshot",
+        "edit_repo_file",
+        "run_repo_checks",
+      ]);
+    }
     const session = sessions.shift();
     assert.ok(session !== undefined, "unexpected extra session retry");
     return session;
@@ -171,6 +185,8 @@ test("repair service retries retryable model provider failures inside the same r
     assert.equal(attempts[0]?.providerErrorRetriesUsed, 1);
     assert.equal(attempts[0]?.lastTerminalAction, "published");
     assert.equal(attempts[0]?.lastSessionStatus, "completed");
+    assert.equal(attempts[0]?.lastSessionFailureKind, undefined);
+    assert.equal(attempts[0]?.lastSessionFailure, undefined);
     assert.equal(state.processedDeliveries["github:delivery-1"], "pending");
   } finally {
     restoreProvider();
@@ -297,6 +313,8 @@ test("repair service retries retryable provider errors thrown before a session s
     assert.equal(attempts[0]?.providerErrorRetriesUsed, 1);
     assert.equal(attempts[0]?.lastTerminalAction, "published");
     assert.equal(attempts[0]?.lastSessionStatus, "completed");
+    assert.equal(attempts[0]?.lastSessionFailureKind, undefined);
+    assert.equal(attempts[0]?.lastSessionFailure, undefined);
   } finally {
     restoreProvider();
     restoreEnv("HOOTLINE_STATE_PATH", previousStatePath);

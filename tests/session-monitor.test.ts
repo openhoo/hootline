@@ -76,6 +76,27 @@ test("does not auto-continue when the model requested human input", () => {
   assert.equal(shouldSendRepairContinuation(observation, 0, 1), false);
 });
 
+test("stops repeated edit_repo_file failures as an edit loop", () => {
+  const state = createObservationState();
+  for (let index = 0; index < 3; index += 1) {
+    observeStreamEvent(state, {
+      type: "action.result",
+      data: {
+        status: "failed",
+        result: { toolName: "edit_repo_file" },
+      },
+    });
+  }
+
+  const observation = finalizeObservation(state);
+
+  assert.equal(observation.status, "failed");
+  assert.equal(observation.failureKind, "no_terminal_action");
+  assert.match(observation.failureMessage ?? "", /edit_repo_file failed repeatedly/);
+  assert.deepEqual(observation.failedTools, ["edit_repo_file", "edit_repo_file", "edit_repo_file"]);
+  assert.equal(shouldSendRepairContinuation(observation, 0, 1), false);
+});
+
 test("extracts channel-local continuation tokens from namespaced Eve tokens", () => {
   assert.equal(
     toLocalContinuationToken("ci:github:openhoo/fixture:abc123:1001", "fallback"),

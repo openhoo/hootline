@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { createHash, createHmac } from "node:crypto";
+import { createHash, createHmac, randomUUID } from "node:crypto";
 import { spawn, spawnSync } from "node:child_process";
 import {
   cpSync,
@@ -8,6 +8,7 @@ import {
   mkdirSync,
   readFileSync,
   rmSync,
+  symlinkSync,
   writeFileSync,
 } from "node:fs";
 import { createServer } from "node:net";
@@ -49,6 +50,14 @@ const DEFAULTS = {
     "hootline-simulated-webhook-secret",
 };
 
+const APP_WORKSPACE_PATHS = [
+  "agent",
+  "package.json",
+  "package-lock.json",
+  "tsconfig.json",
+  "instrumentation.ts",
+];
+
 if (import.meta.url === pathToFileURL(process.argv[1]).href) {
   const options = parseArgs(process.argv.slice(2));
   if (options.help) {
@@ -62,13 +71,14 @@ if (import.meta.url === pathToFileURL(process.argv[1]).href) {
 }
 
 export async function main(options) {
+  const sourceRoot = process.cwd();
   const scenarios = resolveScenarios(options.scenarios);
   const startedAt = new Date();
-  const runId = startedAt.toISOString().replace(/[:.]/g, "-");
-  const artifactDir = resolve(process.cwd(), "var", "simulated-benchmarks", runId);
+  const runId = `${startedAt.toISOString().replace(/[:.]/g, "-")}-${randomUUID().slice(0, 8)}`;
+  const artifactDir = resolve(sourceRoot, "var", "simulated-benchmarks", runId);
   const statePath = resolve(artifactDir, "hootline-state.json");
   const simulatorStatePath = resolve(artifactDir, "simulator-state.json");
-  const fixtureTemplatePath = resolve(process.cwd(), options.fixtureTemplatePath);
+  const fixtureTemplatePath = resolve(sourceRoot, options.fixtureTemplatePath);
 
   console.log(`Simulated benchmark: ${runId}`);
   console.log(`Simulated repo: ${options.repo}`);
@@ -98,6 +108,7 @@ export async function main(options) {
     artifactDir,
     mockModel: options.mockModel,
     simulatorStatePath,
+    sourceRoot,
     statePath,
     webhookSecret: options.webhookSecret,
   }).then((started) => {
@@ -113,6 +124,7 @@ export async function main(options) {
           artifactDir,
           fixtureTemplatePath,
           options,
+          runId,
           sample,
           scenario,
           serverUrl,
@@ -135,6 +147,7 @@ async function runScenarioSample({
   artifactDir,
   fixtureTemplatePath,
   options,
+  runId,
   sample,
   scenario,
   serverUrl,
@@ -167,8 +180,8 @@ async function runScenarioSample({
     throw new Error(`Scenario ${scenario.id} did not produce a failing fixture test.`);
   }
 
-  const sha = simulatedSha(scenario, sample, repoPath);
-  const pipelineId = Date.now() * 1000 + sample;
+  const sha = simulatedSha(scenario, sample, repoPath, runId);
+  const pipelineId = simulatedPipelineId(runId, scenario, sample);
   const deliveryId = `${scenario.id}-${sample}-${sha.slice(0, 12)}`;
   appendSimulatorSample(simulatorStatePath, {
     repoSlug: options.repo,
@@ -351,10 +364,17 @@ async function deliverGitHubWorkflowRun({ deliveryId, options, pipelineId, serve
   }
 }
 
-async function startBenchmarkServer({ artifactDir, mockModel, simulatorStatePath, statePath, webhookSecret }) {
+async function startBenchmarkServer({
+  artifactDir,
+  mockModel,
+  simulatorStatePath,
+  sourceRoot,
+  statePath,
+  webhookSecret,
+}) {
   const port = await findFreePort();
   const env = {
-    ...process.env,
+    ...loadBenchmarkEnvFiles(sourceRoot),
     GITHUB_WEBHOOK_SECRET: webhookSecret,
     HOOTLINE_GITHUB_PROVIDER_BACKEND: "simulated",
     HOOTLINE_SIMULATOR_STATE_PATH: simulatorStatePath,
@@ -365,9 +385,15 @@ async function startBenchmarkServer({ artifactDir, mockModel, simulatorStatePath
     env.HOOTLINE_MODEL = "hootline-simulated-script";
   }
 
+  const appRoot = prepareBenchmarkAppWorkspace({ artifactDir, sourceRoot });
+  writeFileSync(
+    resolve(artifactDir, "app-workspace.json"),
+    `${JSON.stringify({ appRoot, sourceRoot }, null, 2)}\n`,
+  );
+  console.log(`Isolated app workspace: ${appRoot}`);
   console.log("Building Eve app for simulated benchmark...");
   const build = spawnSync("npm", ["run", "build"], {
-    cwd: process.cwd(),
+    cwd: appRoot,
     env,
     encoding: "utf8",
     stdio: "pipe",
@@ -382,7 +408,7 @@ async function startBenchmarkServer({ artifactDir, mockModel, simulatorStatePath
 
   const logStream = createWriteStream(resolve(artifactDir, "server.log"), { flags: "a" });
   const child = spawn("npm", ["run", "start", "--", "--host", "127.0.0.1", "--port", String(port)], {
-    cwd: process.cwd(),
+    cwd: appRoot,
     env,
     stdio: ["ignore", "pipe", "pipe"],
   });
@@ -517,8 +543,9 @@ function buildFailureLog(scenario, failure) {
   ].join("\n").slice(0, 24_000);
 }
 
-function simulatedSha(scenario, sample, repoPath) {
+function simulatedSha(scenario, sample, repoPath, runId) {
   const hash = createHash("sha1");
+  hash.update(runId);
   hash.update(scenario.id);
   hash.update(String(sample));
   for (const mutation of scenarioMutations(scenario)) {
@@ -526,6 +553,93 @@ function simulatedSha(scenario, sample, repoPath) {
     hash.update(readFileSync(resolve(repoPath, mutation.sourcePath)));
   }
   return hash.digest("hex");
+}
+
+function simulatedPipelineId(runId, scenario, sample) {
+  const hash = createHash("sha1");
+  hash.update(runId);
+  hash.update(scenario.id);
+  hash.update(String(sample));
+  return Number.parseInt(hash.digest("hex").slice(0, 12), 16);
+}
+
+export function prepareBenchmarkAppWorkspace({ artifactDir, sourceRoot }) {
+  const appRoot = resolve(artifactDir, "app");
+  rmSync(appRoot, { recursive: true, force: true });
+  mkdirSync(appRoot, { recursive: true });
+
+  for (const relativePath of APP_WORKSPACE_PATHS) {
+    const sourcePath = resolve(sourceRoot, relativePath);
+    if (!existsSync(sourcePath)) continue;
+    const destinationPath = resolve(appRoot, relativePath);
+    mkdirSync(dirname(destinationPath), { recursive: true });
+    cpSync(sourcePath, destinationPath, { recursive: true });
+  }
+
+  const sourceNodeModules = resolve(sourceRoot, "node_modules");
+  if (!existsSync(sourceNodeModules)) {
+    throw new Error(`node_modules is required to build the simulated benchmark app: ${sourceNodeModules}`);
+  }
+  symlinkSync(sourceNodeModules, resolve(appRoot, "node_modules"), "dir");
+  return appRoot;
+}
+
+export function loadBenchmarkEnvFiles(sourceRoot, baseEnv = process.env) {
+  const env = { ...baseEnv };
+  const baseKeys = new Set(Object.keys(baseEnv));
+  for (const fileName of [".env", ".env.local"]) {
+    const envPath = resolve(sourceRoot, fileName);
+    if (!existsSync(envPath)) continue;
+    const values = parseDotEnv(readFileSync(envPath, "utf8"));
+    for (const [key, value] of Object.entries(values)) {
+      if (!baseKeys.has(key)) env[key] = value;
+    }
+  }
+  return env;
+}
+
+export function parseDotEnv(text) {
+  const values = {};
+  for (const line of text.split(/\r?\n/)) {
+    let trimmed = line.trim();
+    if (trimmed === "" || trimmed.startsWith("#")) continue;
+    if (trimmed.startsWith("export ")) trimmed = trimmed.slice("export ".length).trimStart();
+
+    const separator = trimmed.indexOf("=");
+    if (separator <= 0) continue;
+
+    const key = trimmed.slice(0, separator).trim();
+    if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(key)) continue;
+    values[key] = parseDotEnvValue(trimmed.slice(separator + 1));
+  }
+  return values;
+}
+
+function parseDotEnvValue(rawValue) {
+  const value = rawValue.trimStart();
+  if (value.startsWith('"')) {
+    const end = findClosingQuote(value, '"');
+    const quoted = end === -1 ? value.slice(1) : value.slice(1, end);
+    return quoted
+      .replace(/\\n/g, "\n")
+      .replace(/\\r/g, "\r")
+      .replace(/\\t/g, "\t")
+      .replace(/\\"/g, '"')
+      .replace(/\\\\/g, "\\");
+  }
+  if (value.startsWith("'")) {
+    const end = findClosingQuote(value, "'");
+    return end === -1 ? value.slice(1) : value.slice(1, end);
+  }
+  return value.replace(/\s+#.*$/, "").trimEnd();
+}
+
+function findClosingQuote(value, quote) {
+  for (let index = 1; index < value.length; index += 1) {
+    if (value[index] !== quote) continue;
+    if (quote === "'" || value[index - 1] !== "\\") return index;
+  }
+  return -1;
 }
 
 function writeArtifacts({ artifactDir, options, rows, scenarios, startedAt }) {

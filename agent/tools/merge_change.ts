@@ -3,7 +3,7 @@ import { defineTool } from "eve/tools";
 import { resolveCurrentAttempt } from "../lib/current.ts";
 import { createLogger, logError } from "../lib/logger.ts";
 import { getProviderClient } from "../lib/providers/index.ts";
-import { updateAttempt } from "../lib/state.ts";
+import { clearSessionOutcomePatch, updateAttempt } from "../lib/state.ts";
 import { mergeSchema, readBoolean, readOptionalString } from "../lib/tool-input.ts";
 
 const log = createLogger("tools.merge_change");
@@ -33,7 +33,10 @@ export default defineTool({
         deleteSourceBranch: policy.autoMerge.deleteSourceBranch,
       });
       updateAttempt(config.statePath, attempt.key, {
+        ...clearSessionOutcomePatch(),
         lastPublishResult: result,
+        lastSessionStatus: "completed",
+        lastTerminalAction: "merged",
         pendingAutoMerge: false,
       });
       tlog.info({ merged: result.merged, changeNumber: attempt.changeNumber }, "change merged via tool");

@@ -78,6 +78,19 @@ export type AttemptPatch = Partial<
   >
 >;
 
+export function clearSessionOutcomePatch(): AttemptPatch {
+  return {
+    lastSessionFinishReason: undefined,
+    lastSessionFailureKind: undefined,
+    lastSessionFailure: undefined,
+    lastSessionEndedAt: undefined,
+    lastTerminalAction: undefined,
+    lastInputTokens: undefined,
+    lastOutputTokens: undefined,
+    lastEventsSeen: undefined,
+  };
+}
+
 const providerSchema = z.enum(["github", "gitlab"]);
 const publishModeSchema = z.enum(["pr_mr", "push_branch", "auto_merge"]);
 

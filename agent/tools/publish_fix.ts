@@ -6,7 +6,7 @@ import { publishModelOutput } from "../lib/model-output.ts";
 import { getProviderClient } from "../lib/providers/index.ts";
 import { redact } from "../lib/redact.ts";
 import { collectSandboxChanges, runVerificationCommandsWithPolicy } from "../lib/sandbox.ts";
-import { updateAttempt } from "../lib/state.ts";
+import { clearSessionOutcomePatch, updateAttempt } from "../lib/state.ts";
 import { readRequiredString, summarySchema } from "../lib/tool-input.ts";
 
 const log = createLogger("tools.publish_fix");
@@ -46,7 +46,10 @@ export default defineTool({
         summary: redact(readRequiredString(input, "summary"), 4_000),
       });
       updateAttempt(config.statePath, attempt.key, {
+        ...clearSessionOutcomePatch(),
         lastPublishResult: result,
+        lastSessionStatus: "completed",
+        lastTerminalAction: "published",
         publishedBranch: result.branch,
         changeNumber: result.changeNumber,
         changeUrl: result.changeUrl,

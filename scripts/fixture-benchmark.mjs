@@ -537,7 +537,7 @@ export function summarizeRows(rows) {
     group.counts[row.status] = (group.counts[row.status] ?? 0) + 1;
     if (row.status === "published_green") group.publishedGreen += 1;
     byComplexity[complexity] = group;
-    if (row.sessionFailureKind !== undefined) {
+    if (row.status !== "published_green" && row.status !== "dry_run" && row.sessionFailureKind !== undefined) {
       failureKinds[row.sessionFailureKind] = (failureKinds[row.sessionFailureKind] ?? 0) + 1;
     }
     for (const tool of row.failedTools ?? []) {

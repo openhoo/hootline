@@ -1,5 +1,14 @@
 import { execFileSync, spawnSync } from "node:child_process";
-import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  cpSync,
+  existsSync,
+  lstatSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -8,6 +17,7 @@ import test from "node:test";
 
 const scenarioModule = await import(new URL("../scripts/fixture-scenarios.mjs", import.meta.url).href);
 const benchmarkModule = await import(new URL("../scripts/fixture-benchmark.mjs", import.meta.url).href);
+const simulatedBenchmarkModule = await import(new URL("../scripts/simulated-benchmark.mjs", import.meta.url).href);
 
 const {
   SCENARIOS,
@@ -28,6 +38,11 @@ const {
   summarizeRows,
   summarizeStatusCheckRollup,
 } = benchmarkModule;
+const {
+  loadBenchmarkEnvFiles,
+  parseDotEnv,
+  prepareBenchmarkAppWorkspace,
+} = simulatedBenchmarkModule;
 
 test("fixture scenarios replace exactly one passing source region", () => {
   const tempRoot = mkdtempSync(join(tmpdir(), "hootline-fixture-scenarios-"));
@@ -126,6 +141,67 @@ test("simulated benchmark dry-run does not require a server or provider credenti
   assert.match(output, /Mode: dry run/);
   assert.match(output, /checkout-money-shipping-tax-cascade/);
   assert.match(output, /dry_run: 1/);
+});
+
+test("simulated benchmark stages an isolated Eve app workspace without env files", () => {
+  const tempRoot = mkdtempSync(join(tmpdir(), "hootline-simulated-app-"));
+  try {
+    const sourceRoot = join(tempRoot, "source");
+    const artifactDir = join(tempRoot, "artifacts", "run");
+    mkdirSync(join(sourceRoot, "agent"), { recursive: true });
+    mkdirSync(join(sourceRoot, "node_modules"), { recursive: true });
+    writeFileSync(join(sourceRoot, "agent", "instructions.md"), "Fix the pipeline.\n");
+    writeFileSync(join(sourceRoot, "package.json"), JSON.stringify({ scripts: { build: "eve build" } }));
+    writeFileSync(join(sourceRoot, "package-lock.json"), "{}\n");
+    writeFileSync(join(sourceRoot, "tsconfig.json"), "{}\n");
+    writeFileSync(join(sourceRoot, ".env.local"), "HOOTLINE_MODEL_API_KEY=secret\n");
+    writeFileSync(join(sourceRoot, "var"), "not copied\n");
+
+    const appRoot = prepareBenchmarkAppWorkspace({ artifactDir, sourceRoot });
+
+    assert.equal(readFileSync(join(appRoot, "agent", "instructions.md"), "utf8"), "Fix the pipeline.\n");
+    assert.equal(existsSync(join(appRoot, ".env.local")), false);
+    assert.equal(existsSync(join(appRoot, "var")), false);
+    assert.equal(lstatSync(join(appRoot, "node_modules")).isSymbolicLink(), true);
+  } finally {
+    rmSync(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("simulated benchmark loads repo env files without overriding caller env", () => {
+  const tempRoot = mkdtempSync(join(tmpdir(), "hootline-simulated-env-"));
+  try {
+    writeFileSync(
+      join(tempRoot, ".env"),
+      [
+        "HOOTLINE_MODEL_PROVIDER=anthropic",
+        "HOOTLINE_MODEL=from-env",
+        "SHELL_DEFINED=from-env-file",
+      ].join("\n"),
+    );
+    writeFileSync(
+      join(tempRoot, ".env.local"),
+      [
+        "HOOTLINE_MODEL=openai-compatible/from-local",
+        'QUOTED="line\\nnext"',
+        "export SINGLE='literal # value'",
+      ].join("\n"),
+    );
+
+    const env = loadBenchmarkEnvFiles(tempRoot, { SHELL_DEFINED: "from-shell" });
+
+    assert.equal(env.HOOTLINE_MODEL_PROVIDER, "anthropic");
+    assert.equal(env.HOOTLINE_MODEL, "openai-compatible/from-local");
+    assert.equal(env.SHELL_DEFINED, "from-shell");
+    assert.equal(env.QUOTED, "line\nnext");
+    assert.equal(env.SINGLE, "literal # value");
+    assert.deepEqual(parseDotEnv("INVALID-LINE\nA=1 # comment\nB=two#kept\n"), {
+      A: "1",
+      B: "two#kept",
+    });
+  } finally {
+    rmSync(tempRoot, { recursive: true, force: true });
+  }
 });
 
 test("tracked simulated fixture is green before each scenario mutation and red after it", () => {
@@ -298,6 +374,7 @@ test("benchmark summarizer finds latest attempt for a sha", () => {
       continuationsUsed: 1,
       providerErrorRetriesUsed: 1,
       scenarioComplexity: "complex",
+      sessionFailureKind: "provider_error",
       failedTools: ["edit_repo_file"],
     },
   ]);
@@ -308,6 +385,7 @@ test("benchmark summarizer finds latest attempt for a sha", () => {
   assert.equal(summary.averageAttempts, 2);
   assert.equal(summary.averageContinuations, 1);
   assert.equal(summary.averageProviderErrorRetries, 1);
+  assert.deepEqual(summary.failureKinds, {});
   assert.deepEqual(summary.byComplexity.complex, {
     total: 1,
     publishedGreen: 1,

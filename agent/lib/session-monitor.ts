@@ -40,6 +40,7 @@ export interface ObservationState {
 }
 
 const DEFAULT_MONITOR_TIMEOUT_MS = 15 * 60 * 1000;
+const MAX_FAILED_EDIT_TOOL_RESULTS = 3;
 
 export async function observeRepairSession(
   session: StreamSession,
@@ -196,6 +197,12 @@ function observeActionResult(state: ObservationState, data: UnknownRecord): void
   if (toolName === undefined) return;
   if (status === "failed" || status === "rejected") {
     state.failedTools.push(toolName);
+    if (toolName === "edit_repo_file" && countToolFailures(state.failedTools, toolName) >= MAX_FAILED_EDIT_TOOL_RESULTS) {
+      state.boundary = "failed";
+      state.failureKind = "no_terminal_action";
+      state.failureMessage =
+        "edit_repo_file failed repeatedly without a successful edit. The repair session is being stopped to avoid an unbounded edit loop.";
+    }
     return;
   }
   if (status !== "completed") return;
@@ -261,6 +268,10 @@ function readToolName(action: unknown): string | undefined {
 
 function readArray(value: unknown): unknown[] {
   return Array.isArray(value) ? value : [];
+}
+
+function countToolFailures(tools: readonly string[], toolName: string): number {
+  return tools.reduce((count, tool) => (tool === toolName ? count + 1 : count), 0);
 }
 
 function readWithTimeout(

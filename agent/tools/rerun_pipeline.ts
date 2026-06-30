@@ -3,7 +3,13 @@ import { defineTool } from "eve/tools";
 import { resolveCurrentAttempt } from "../lib/current.ts";
 import { createLogger, logError } from "../lib/logger.ts";
 import { getProviderClient } from "../lib/providers/index.ts";
-import { claimRerunRequest, recordRerunFailure, recordRerunResult } from "../lib/state.ts";
+import {
+  claimRerunRequest,
+  clearSessionOutcomePatch,
+  recordRerunFailure,
+  recordRerunResult,
+  updateAttempt,
+} from "../lib/state.ts";
 import { readOptionalString, readRequiredString, rerunSchema } from "../lib/tool-input.ts";
 
 const log = createLogger("tools.rerun_pipeline");
@@ -24,6 +30,11 @@ export default defineTool({
     try {
       const result = await getProviderClient(attempt.event.provider).rerunPipeline(attempt.event);
       recordRerunResult(config.statePath, attempt.key, claim.request.id, result);
+      updateAttempt(config.statePath, attempt.key, {
+        ...clearSessionOutcomePatch(),
+        lastSessionStatus: "completed",
+        lastTerminalAction: "rerun_requested",
+      });
       tlog.info("pipeline rerun requested");
       return { ...result, reason };
     } catch (error) {

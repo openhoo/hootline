@@ -14,6 +14,7 @@ import {
 import {
   claimAutoMerge,
   claimRepairSlot,
+  clearSessionOutcomePatch,
   eventAttemptKey,
   findPendingAutoMergeAttempt,
   markDeliveryProcessed,
@@ -207,6 +208,7 @@ async function startRepairSession(input: {
         continue;
       }
       updateAttempt(config.statePath, input.attemptKey, {
+        ...clearSessionOutcomePatch(),
         lastSessionId: session.id,
         lastSessionStatus: "running",
         providerErrorRetriesUsed,
@@ -262,9 +264,14 @@ async function prepareProviderErrorRetry(input: {
 }): Promise<void> {
   const delayMs = providerErrorRetryDelayMs(input.config, input.providerErrorRetriesUsed);
   updateAttempt(input.config.statePath, input.attemptKey, {
+    ...clearSessionOutcomePatch(),
+    lastSessionId: undefined,
     lastSessionStatus: "running",
     lastSessionFailureKind: input.observation.failureKind,
     lastSessionFailure: formatRetryStatusMessage(input.observation, input.providerErrorRetriesUsed, delayMs),
+    lastToolSequence: input.observation.toolSequence,
+    lastFailedTools: input.observation.failedTools,
+    lastEventsSeen: input.observation.eventsSeen,
     providerErrorRetriesUsed: input.providerErrorRetriesUsed,
   });
   input.slog.warn(
@@ -315,6 +322,7 @@ async function monitorRepairLoop(input: {
     continuationsUsed += 1;
     continuationToken = toLocalContinuationToken(session.continuationToken, continuationToken);
     updateAttempt(input.config.statePath, input.attemptKey, {
+      ...clearSessionOutcomePatch(),
       continuationsUsed,
       lastSessionStatus: "running",
     });
@@ -342,6 +350,7 @@ async function monitorRepairLoop(input: {
       },
     );
     updateAttempt(input.config.statePath, input.attemptKey, {
+      ...clearSessionOutcomePatch(),
       lastSessionId: session.id,
       lastSessionStatus: "running",
     });
