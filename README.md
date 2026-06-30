@@ -228,6 +228,40 @@ The generated app requests repository permissions for Actions write, Checks
 read, Contents write, Issues write, Metadata read, and Pull requests write. It
 subscribes to `workflow_run` and `check_suite` events.
 
+## Pipeline Fixture Reset
+
+The `wakemeup0/hootline-pipeline-fixture` repo is reset through a destructive,
+repeatable workflow so every end-to-end test starts from the same repairable
+state. The default baseline is commit
+`51548227536681dc832fc83ee091c57c17fff864`, also pushed as tag
+`hootline-fixture-baseline-v1`; it contains passing tests plus `.hootline.yaml`.
+
+Preview the reset plan:
+
+```sh
+npm run fixture:reset -- --dry-run
+```
+
+Run the reset:
+
+```sh
+npm run fixture:reset -- --yes
+```
+
+The workflow:
+
+- closes all open PRs in the fixture repo;
+- deletes remote `hootline/fix/*` branches;
+- force-pushes fixture `main` back to the baseline commit;
+- verifies the baseline with `npm test`;
+- changes `src/checkout.js` back to the known discount bug;
+- verifies the bug fails the fixture tests;
+- commits and pushes the fresh failing `main` commit.
+
+Defaults can be overridden with `HOOTLINE_FIXTURE_REPO`,
+`HOOTLINE_FIXTURE_PATH`, `HOOTLINE_FIXTURE_BASELINE_REF`,
+`HOOTLINE_FIXTURE_MAIN_BRANCH`, and `HOOTLINE_FIXTURE_FIX_BRANCH_PREFIX`.
+
 ### Cloudflare Quick Tunnel
 
 For local GitHub webhook testing without a permanent public host:
@@ -334,6 +368,7 @@ npm run build
 npm run typecheck
 npm test
 npm run check:model-matrix
+npm run fixture:reset -- --dry-run
 npm run github-app:setup -- --help
 ```
 
