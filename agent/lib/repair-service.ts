@@ -27,6 +27,8 @@ import { isFailedConclusion, isSuccessfulConclusion } from "./webhooks.ts";
 
 const log = createLogger("lib.repair-service");
 const MAX_REPAIR_CONTINUATIONS = 1;
+const SUCCESS_FOLLOWUP_LOOKUP_RETRIES = 5;
+const SUCCESS_FOLLOWUP_LOOKUP_RETRY_DELAY_MS = 100;
 
 export async function dispatchPipelineEvent(
   event: NormalizedPipelineEvent | null,
@@ -410,7 +412,7 @@ async function handleSuccessfulPipeline(
   gitlabVerification?: "standard" | "secret_token",
 ): Promise<void> {
   const config = loadServiceConfig();
-  const attempt = findPendingAutoMergeAttempt(config.statePath, {
+  const attempt = await findPendingAutoMergeAttemptAfterSettle(config.statePath, {
     provider: event.provider,
     repoSlug: event.repoSlug,
     branch: event.ref,
@@ -418,6 +420,7 @@ async function handleSuccessfulPipeline(
   });
   if (attempt?.changeNumber === undefined || attempt.publishedBranch === undefined) {
     parentLog.debug("no pending auto-merge attempt matches this successful pipeline");
+    await releaseDelivery(config.statePath, deliveryKey);
     return;
   }
   const policy = attempt.policy;
@@ -431,6 +434,7 @@ async function handleSuccessfulPipeline(
       { attemptKey: attempt.key },
       "gitlab secret-token fallback rejected by pending auto-merge policy",
     );
+    await releaseDelivery(config.statePath, deliveryKey);
     return;
   }
   const changeNumber = attempt.changeNumber;
@@ -446,9 +450,17 @@ async function handleSuccessfulPipeline(
       changeNumber,
       branch,
       deleteSourceBranch: policy.autoMerge.deleteSourceBranch,
+      expectedCommitSha: attempt.lastPublishResult?.commitSha,
     });
     updateAttempt(config.statePath, attempt.key, {
+      ...clearSessionOutcomePatch(),
       lastPublishResult: result,
+      lastSessionStatus: "completed",
+      lastTerminalAction: "merged",
+      publishedBranch: result.branch,
+      changeNumber: result.changeNumber,
+      changeUrl: result.changeUrl,
+      pendingAutoMerge: false,
     });
     mlog.info({ merged: result.merged }, "auto-merge completed");
   } catch (error) {
@@ -456,6 +468,20 @@ async function handleSuccessfulPipeline(
     await releaseDelivery(config.statePath, deliveryKey);
     throw error;
   }
+}
+
+async function findPendingAutoMergeAttemptAfterSettle(
+  statePath: string,
+  input: Parameters<typeof findPendingAutoMergeAttempt>[1],
+) {
+  for (let attempt = 0; attempt <= SUCCESS_FOLLOWUP_LOOKUP_RETRIES; attempt += 1) {
+    const match = findPendingAutoMergeAttempt(statePath, input);
+    if (match !== undefined) return match;
+    if (attempt < SUCCESS_FOLLOWUP_LOOKUP_RETRIES) {
+      await sleep(SUCCESS_FOLLOWUP_LOOKUP_RETRY_DELAY_MS);
+    }
+  }
+  return undefined;
 }
 
 async function loadFailureContext(

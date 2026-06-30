@@ -220,7 +220,10 @@ function terminalActionFromToolResult(
     return "comment_posted";
   }
   if (toolName === "merge_change" && isRecord(output) && output.merged === true) return "merged";
-  if (toolName === "publish_fix" && isRecord(output) && output.published === true) return "published";
+  if (toolName === "publish_fix" && isRecord(output) && output.published === true) {
+    const result = isRecord(output.result) ? output.result : undefined;
+    return result?.merged === true ? "merged" : "published";
+  }
   return undefined;
 }
 
@@ -230,6 +233,7 @@ function classifyStatus(
 ): RepairSessionStatus {
   if (state.boundary === "failed") return "failed";
   if (state.terminalAction !== undefined) return "completed";
+  if (state.boundary === "completed" && failure.kind !== undefined) return "abandoned";
   if (state.boundary === "completed") return "completed";
   if (failure.kind !== undefined) return "waiting";
   return "running";

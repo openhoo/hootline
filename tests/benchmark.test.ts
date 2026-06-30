@@ -18,11 +18,14 @@ import test from "node:test";
 const scenarioModule = await import(new URL("../scripts/fixture-scenarios.mjs", import.meta.url).href);
 const benchmarkModule = await import(new URL("../scripts/benchmarks/common.mjs", import.meta.url).href);
 const simulatedAppModule = await import(new URL("../scripts/benchmarks/simulated-app.mjs", import.meta.url).href);
+const simulatedBenchmarkModule = await import(new URL("../scripts/simulated-benchmark.mjs", import.meta.url).href);
+const configModule = await import(new URL("../agent/lib/config.ts", import.meta.url).href);
 
 const {
   SCENARIOS,
   applyScenarioMutation,
   assertScenarioBaseline,
+  expectedFixtureFiles,
   scenarioExpectedRepairFiles,
   scenarioMutations,
   scenarioSourcePaths,
@@ -43,6 +46,31 @@ const {
   parseDotEnv,
   prepareBenchmarkAppWorkspace,
 } = simulatedAppModule;
+const {
+  buildBenchmarkServerEnv,
+  buildFailureLog,
+  parseArgs,
+  runFixtureCommand,
+} = simulatedBenchmarkModule;
+const { parseRepoPolicyConfig } = configModule;
+
+function childMarkerCommand(markerPath: string): string {
+  const childScript = [
+    `setTimeout(() => require("node:fs").writeFileSync(${JSON.stringify(markerPath)}, "alive"), 250);`,
+    "setTimeout(() => {}, 2000);",
+  ].join("\n");
+  const parentScript = [
+    'const { spawn } = require("node:child_process");',
+    `const child = spawn(process.execPath, ["-e", ${JSON.stringify(childScript)}], { stdio: "ignore" });`,
+    "child.unref();",
+    "setTimeout(() => {}, 2000);",
+  ].join("\n");
+  return `${JSON.stringify(process.execPath)} -e ${JSON.stringify(parentScript)}`;
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
 
 test("fixture scenarios replace exactly one passing source region", () => {
   const tempRoot = mkdtempSync(join(tmpdir(), "hootline-fixture-scenarios-"));
@@ -143,14 +171,35 @@ test("complex fixture scenarios expose all mutated and expected repair files", (
   ]);
 });
 
+test("tracked fixture policies and expected files exist and parse", () => {
+  const repoRoot = fileURLToPath(new URL("..", import.meta.url));
+  for (const relativePath of expectedFixtureFiles()) {
+    assert.equal(existsSync(join(repoRoot, relativePath)), true, `${relativePath} should exist`);
+  }
+
+  for (const project of resolveProjects("all")) {
+    const policyPath = join(repoRoot, project.templatePath, ".hootline.yaml");
+    const policy = parseRepoPolicyConfig(readFileSync(policyPath, "utf8"), {
+      provider: "github",
+      slug: `openhoo/${project.id}`,
+    });
+    assert.equal(policy.verificationCommands.length > 0, true);
+    assert.equal(policy.allowedFileGlobs.length > 0, true);
+  }
+});
+
 test("simulated benchmark dry-run does not require a server or provider credentials", () => {
   const scriptPath = fileURLToPath(new URL("../scripts/simulated-benchmark.mjs", import.meta.url));
   const repoRoot = fileURLToPath(new URL("..", import.meta.url));
+  const tempRoot = mkdtempSync(join(tmpdir(), "hootline-benchmark-dry-run-"));
+  const artifactDir = join(tempRoot, "artifacts");
   const output = execFileSync(
     process.execPath,
     [
       scriptPath,
       "--dry-run",
+      "--artifact-dir",
+      artifactDir,
       "--projects",
       "commerce-platform",
       "--scenarios",
@@ -168,6 +217,8 @@ test("simulated benchmark dry-run does not require a server or provider credenti
   assert.match(output, /Projects: commerce-platform/);
   assert.match(output, /checkout-money-shipping-tax-cascade/);
   assert.match(output, /dry_run: 1/);
+  assert.equal(existsSync(artifactDir), false);
+  rmSync(tempRoot, { recursive: true, force: true });
 });
 
 test("simulated benchmark stages an isolated Eve app workspace without env files", () => {
@@ -280,6 +331,15 @@ test("benchmark helpers classify attempt and PR check outcomes", () => {
   );
   assert.equal(
     classifyBenchmarkStatus({
+      attempt: { changeNumber: 4 },
+      expectedRepairFilesMatch: false,
+      prChecks: { conclusion: "success", checks: [] },
+      repairResult: { status: "published" },
+    }),
+    "published_unexpected_files",
+  );
+  assert.equal(
+    classifyBenchmarkStatus({
       attempt: { lastSessionStatus: "abandoned" },
       prChecks: undefined,
       repairResult: { status: "terminal_without_publish" },
@@ -310,6 +370,98 @@ test("benchmark helpers classify attempt and PR check outcomes", () => {
     }),
     "comment_posted",
   );
+});
+
+test("simulated failure context does not expose expected repair file oracle", () => {
+  const scenario = resolveScenario("shipping-threshold-basis");
+  const log = buildFailureLog(scenario, {
+    stdout: "AssertionError: shipping threshold should use subtotal basis",
+    stderr: "",
+  });
+
+  assert.doesNotMatch(log, /Expected repair files/);
+  assert.doesNotMatch(log, /src\/shipping\.js/);
+});
+
+test("fixture command runner times out hanging commands", () => {
+  const tempRoot = mkdtempSync(join(tmpdir(), "hootline-fixture-timeout-"));
+  try {
+    const result = runFixtureCommand(
+      tempRoot,
+      [`${JSON.stringify(process.execPath)} -e "setTimeout(() => {}, 1000)"`],
+      { timeoutMs: 50 },
+    );
+
+    assert.equal(result.status, 1);
+    assert.equal(result.timedOut, true);
+    assert.equal(result.commands[0]?.status, 124);
+    assert.equal(result.commands[0]?.timedOut, true);
+    assert.match(result.stderr, /timed out after 50ms/);
+  } finally {
+    rmSync(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("fixture command runner cleans up child processes after timeout", async () => {
+  const tempRoot = mkdtempSync(join(tmpdir(), "hootline-fixture-timeout-tree-"));
+  try {
+    const markerPath = join(tempRoot, "child-lived");
+    const result = runFixtureCommand(tempRoot, [childMarkerCommand(markerPath)], { timeoutMs: 75 });
+
+    assert.equal(result.status, 1);
+    assert.equal(result.timedOut, true);
+    await sleep(500);
+    assert.equal(existsSync(markerPath), false);
+  } finally {
+    rmSync(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("fixture command runner does not classify ordinary SIGTERM exits as timeouts", () => {
+  const tempRoot = mkdtempSync(join(tmpdir(), "hootline-fixture-signal-"));
+  try {
+    const result = runFixtureCommand(tempRoot, ["kill -TERM $$"], { timeoutMs: 1_000 });
+
+    assert.equal(result.status, 1);
+    assert.equal(result.timedOut, false);
+    assert.equal(result.commands[0]?.status, 1);
+    assert.equal(result.commands[0]?.timedOut, false);
+    assert.doesNotMatch(result.stderr, /timed out/);
+  } finally {
+    rmSync(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("simulated benchmark server env receives fixture command timeout option", () => {
+  const tempRoot = mkdtempSync(join(tmpdir(), "hootline-benchmark-env-"));
+  try {
+    const env = buildBenchmarkServerEnv({
+      fixtureCommandTimeoutMs: 1234,
+      mockModel: true,
+      simulatorStatePath: join(tempRoot, "simulator-state.json"),
+      sourceRoot: tempRoot,
+      statePath: join(tempRoot, "hootline-state.json"),
+      webhookSecret: "secret",
+    });
+
+    assert.equal(env.HOOTLINE_SIMULATED_FIXTURE_COMMAND_TIMEOUT_MS, "1234");
+    assert.equal(env.HOOTLINE_GITHUB_PROVIDER_BACKEND, "simulated");
+    assert.equal(env.HOOTLINE_MODEL_PROVIDER, "mock");
+    assert.equal(env.HOOTLINE_MODEL, "hootline-simulated-script");
+  } finally {
+    rmSync(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("simulated benchmark CLI preserves inline values containing equals", () => {
+  const parsed = parseArgs([
+    "--webhook-secret=a=b==",
+    "--server-url",
+    "http://127.0.0.1:3000/eve?token=a=b",
+  ]);
+
+  assert.equal(parsed.webhookSecret, "a=b==");
+  assert.equal(parsed.serverUrl, "http://127.0.0.1:3000/eve?token=a=b");
 });
 
 test("benchmark rows retain complex scenario metadata", () => {

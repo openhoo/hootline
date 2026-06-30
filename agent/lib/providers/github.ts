@@ -151,11 +151,9 @@ export class GitHubProvider implements ProviderClient {
       });
       return;
     }
-    if (event.pipelineUrl !== undefined) {
-      await this.request(event, "POST", `/repos/${event.repoSlug}/commits/${event.sha}/comments`, {
-        body: `${body}\n\nPipeline: ${event.pipelineUrl}`,
-      });
-    }
+    await this.request(event, "POST", `/repos/${event.repoSlug}/commits/${event.sha}/comments`, {
+      body: event.pipelineUrl === undefined ? body : `${body}\n\nPipeline: ${event.pipelineUrl}`,
+    });
   }
 
   async rerunPipeline(event: NormalizedPipelineEvent): Promise<{ message: string }> {
@@ -174,6 +172,7 @@ export class GitHubProvider implements ProviderClient {
       {
         merge_method: "squash",
         commit_title: `Fix failing pipeline for ${input.event.sha.slice(0, 12)}`,
+        ...(input.expectedCommitSha === undefined ? {} : { sha: input.expectedCommitSha }),
       },
     );
     if (input.deleteSourceBranch) {
@@ -378,7 +377,7 @@ export class GitHubProvider implements ProviderClient {
       {
         title: `Fix failing pipeline for ${event.sha.slice(0, 12)}`,
         head: branch,
-        base: event.targetBranch ?? event.ref,
+        base: event.sourceBranch ?? event.ref,
         body: buildChangeBody(event, summary),
         maintainer_can_modify: true,
       },

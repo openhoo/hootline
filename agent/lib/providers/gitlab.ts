@@ -179,6 +179,7 @@ export class GitLabProvider implements ProviderClient {
       {
         squash: true,
         should_remove_source_branch: input.deleteSourceBranch,
+        ...(input.expectedCommitSha === undefined ? {} : { sha: input.expectedCommitSha }),
       },
     );
     return {
@@ -285,7 +286,7 @@ export class GitLabProvider implements ProviderClient {
       `/projects/${encodeProject(event)}/merge_requests`,
       {
         source_branch: branch,
-        target_branch: event.targetBranch ?? event.ref,
+        target_branch: event.sourceBranch ?? event.ref,
         title: `Fix failing pipeline for ${event.sha.slice(0, 12)}`,
         description: buildChangeBody(event, summary),
         remove_source_branch: deleteSourceBranch,

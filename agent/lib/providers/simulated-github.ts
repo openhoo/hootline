@@ -11,7 +11,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve, sep } from "node:path";
-import { spawnSync } from "node:child_process";
+import { spawnSync, type SpawnSyncOptionsWithStringEncoding } from "node:child_process";
 import * as tar from "tar";
 
 import { validateChangesAgainstPolicy } from "../sandbox.ts";
@@ -80,6 +80,7 @@ interface SimulatedCheckRecord {
   status: "COMPLETED";
   conclusion: "SUCCESS" | "FAILURE";
   exitCode: number;
+  timedOut?: boolean | undefined;
   stdout: string;
   stderr: string;
 }
@@ -105,6 +106,7 @@ interface SimulatedMergeRecord {
 }
 
 const MAX_CHECK_OUTPUT_CHARS = 6_000;
+const DEFAULT_SIMULATED_CHECK_TIMEOUT_MS = 60_000;
 
 export class SimulatedGitHubProvider implements ProviderClient {
   async readRepositoryFileFromDefaultBranch(
@@ -172,7 +174,7 @@ export class SimulatedGitHubProvider implements ProviderClient {
             number,
             url: `https://simulated.github.local/${input.event.repoSlug}/pull/${number}`,
             branch,
-            baseRef: input.event.targetBranch ?? input.event.ref,
+            baseRef: input.event.sourceBranch ?? input.event.ref,
             headSha: commitSha,
             sourceSha: input.event.sha,
             summary: input.summary,
@@ -399,22 +401,59 @@ function applyChanges(root: string, changes: readonly SandboxChange[]): void {
 
 function runVerificationCommands(root: string, commands: readonly string[]): SimulatedCheckRecord[] {
   return commands.map((command) => {
+    const timeoutMs = readSimulatedCheckTimeoutMs();
     const result = spawnSync("bash", ["-lc", `set -euo pipefail; ${command}`], {
       cwd: root,
+      detached: true,
       encoding: "utf8",
       maxBuffer: 1024 * 1024,
       stdio: "pipe",
-    });
-    const exitCode = typeof result.status === "number" ? result.status : 1;
+      timeout: timeoutMs,
+    } as SpawnSyncOptionsWithStringEncoding & { detached: boolean });
+    const timedOut = isSpawnTimeout(result.error);
+    if (timedOut) terminateProcessGroup(result.pid);
+    const exitCode = timedOut ? 124 : typeof result.status === "number" ? result.status : 1;
+    const stderr = [
+      result.stderr ?? "",
+      timedOut ? `Command timed out after ${timeoutMs}ms.` : "",
+    ].filter(Boolean).join("\n");
     return {
       name: command,
       status: "COMPLETED",
       conclusion: exitCode === 0 ? "SUCCESS" : "FAILURE",
       exitCode,
+      timedOut,
       stdout: capText(result.stdout),
-      stderr: capText(result.stderr),
+      stderr: capText(stderr),
     };
   });
+}
+
+function isSpawnTimeout(error: Error | undefined): boolean {
+  return error !== undefined && "code" in error && error.code === "ETIMEDOUT";
+}
+
+function terminateProcessGroup(pid: number | undefined): void {
+  if (pid === undefined || !Number.isSafeInteger(pid) || pid <= 0) return;
+  try {
+    process.kill(-pid, "SIGTERM");
+  } catch {
+    return;
+  }
+  sleepSync(100);
+  try {
+    process.kill(-pid, 0);
+    process.kill(-pid, "SIGKILL");
+  } catch {
+    // The process group already exited after SIGTERM.
+  }
+}
+
+function readSimulatedCheckTimeoutMs(): number {
+  const configured = process.env.HOOTLINE_SIMULATED_FIXTURE_COMMAND_TIMEOUT_MS;
+  if (configured === undefined || configured.trim() === "") return DEFAULT_SIMULATED_CHECK_TIMEOUT_MS;
+  const parsed = Number(configured);
+  return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : DEFAULT_SIMULATED_CHECK_TIMEOUT_MS;
 }
 
 function simulatedCommitSha(

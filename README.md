@@ -133,6 +133,9 @@ semantic version from Conventional Commits, update `package.json`,
 `package-lock.json`, and `CHANGELOG.md`, create a GitHub release, then publish a
 multi-arch image to GitHub Container Registry.
 
+The `package.json` is intentionally `private`; Hootline is released as source,
+GitHub releases, and GHCR images, not as a public npm package.
+
 Published image tags:
 
 - `ghcr.io/openhoo/hootline:<version>`
@@ -144,6 +147,9 @@ Published image tags:
 
 Core settings:
 
+- `HOST`: bind address used by Eve. Defaults to the runtime's framework default;
+  the container sets `0.0.0.0`.
+- `PORT`: HTTP port used by Eve. The container defaults to `3000`.
 - `HOOTLINE_STATE_PATH`: durable JSON state file for delivery dedupe, attempts,
   verification results, publish records, rerun records, and pending auto-merge
   records. Defaults to `var/hootline-state.json`.
@@ -337,6 +343,9 @@ Preview the selected scenarios without starting Hootline:
 npm run benchmark:sim:dry-run
 ```
 
+Dry runs are read-only: they validate fixture metadata and print rows without
+creating benchmark artifacts or simulator state.
+
 Run one deterministic smoke sample with Eve's mock model:
 
 ```sh
@@ -360,6 +369,11 @@ Run multiple simulated scenario samples concurrently:
 ```sh
 npm run benchmark:sim -- --mock-model --scenarios all --samples 1 --concurrency 4
 ```
+
+Use `--artifact-dir <path>` to write a non-dry-run's artifacts to a specific
+directory. Fixture verification commands time out after 60000 ms by default;
+override with `--fixture-command-timeout-ms <ms>` when a scenario needs a
+different bound.
 
 The benchmark projects are intentionally larger than the individual scenario
 mutations. The default suite currently includes `commerce-platform` and
@@ -532,7 +546,7 @@ npm run github-app:setup -- --help
 Full local verification:
 
 ```sh
-npm run typecheck
+npm run lint
 npm test
 npm run check:model-matrix
 ANTHROPIC_API_KEY=test HOOTLINE_MODEL_PROVIDER=anthropic HOOTLINE_MODEL=claude-sonnet-4-6 npm run info

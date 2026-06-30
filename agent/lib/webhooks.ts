@@ -101,6 +101,7 @@ export function normalizeGitLabEvent(body: unknown, headers: Headers): Normalize
     conclusion: status,
     actor: isRecord(body.user) ? readString(body.user.username) : undefined,
     mergeRequestIid: isRecord(mergeRequest) ? readNumber(mergeRequest.iid) : undefined,
+    sourceBranch: isRecord(mergeRequest) ? readString(mergeRequest.source_branch) ?? ref : undefined,
     targetBranch: isRecord(mergeRequest) ? readString(mergeRequest.target_branch) : undefined,
     eventName: headers.get("x-gitlab-event") ?? "Pipeline Hook",
     receivedAt: new Date().toISOString(),
@@ -127,6 +128,8 @@ function normalizeGitHubWorkflowRun(
     : [];
   const pullRequest = pullRequests.find(isRecord);
   const pullRequestBase = isRecord(pullRequest?.base) ? pullRequest.base : undefined;
+  const pullRequestHead = isRecord(pullRequest?.head) ? pullRequest.head : undefined;
+  const sourceBranch = readString(pullRequestHead?.ref) ?? ref;
   return {
     provider: "github",
     id: `github:${repoSlug}:${runId}:${sha}`,
@@ -143,7 +146,8 @@ function normalizeGitHubWorkflowRun(
     conclusion,
     actor: isRecord(body.sender) ? readString(body.sender.login) : undefined,
     pullRequestNumber: isRecord(pullRequest) ? readNumber(pullRequest.number) : undefined,
-    targetBranch: readString(pullRequestBase?.ref) ?? readString(workflowRun.head_branch),
+    sourceBranch,
+    targetBranch: readString(pullRequestBase?.ref),
     eventName,
     receivedAt: new Date().toISOString(),
   };
@@ -169,6 +173,8 @@ function normalizeGitHubCheckSuite(
     : [];
   const pullRequest = pullRequests.find(isRecord);
   const pullRequestBase = isRecord(pullRequest?.base) ? pullRequest.base : undefined;
+  const pullRequestHead = isRecord(pullRequest?.head) ? pullRequest.head : undefined;
+  const sourceBranch = readString(pullRequestHead?.ref) ?? ref;
   return {
     provider: "github",
     id: `github:${repoSlug}:${suiteId}:${sha}`,
@@ -185,7 +191,8 @@ function normalizeGitHubCheckSuite(
     conclusion,
     actor: isRecord(body.sender) ? readString(body.sender.login) : undefined,
     pullRequestNumber: isRecord(pullRequest) ? readNumber(pullRequest.number) : undefined,
-    targetBranch: readString(pullRequestBase?.ref) ?? ref,
+    sourceBranch,
+    targetBranch: readString(pullRequestBase?.ref),
     eventName,
     receivedAt: new Date().toISOString(),
   };

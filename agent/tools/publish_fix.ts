@@ -46,6 +46,74 @@ export default defineTool({
         changes,
         summary: redact(readRequiredAliasedString(normalizedInput, "summary", ["message", "body"]), 4_000),
       });
+      if (
+        result.mode === "auto_merge" &&
+        result.changeNumber !== undefined &&
+        !policy.autoMerge.requireSuccessfulPipeline
+      ) {
+        updateAttempt(config.statePath, attempt.key, {
+          lastPublishResult: result,
+          publishedBranch: result.branch,
+          changeNumber: result.changeNumber,
+          changeUrl: result.changeUrl,
+          pendingAutoMerge: false,
+        });
+        let merged;
+        try {
+          merged = await getProviderClient(attempt.event.provider).mergeChange({
+            event: attempt.event,
+            changeNumber: result.changeNumber,
+            branch: result.branch,
+            deleteSourceBranch: policy.autoMerge.deleteSourceBranch,
+            expectedCommitSha: result.commitSha,
+          });
+        } catch (error) {
+          logError(tlog, "fix published but immediate auto-merge failed", error);
+          updateAttempt(config.statePath, attempt.key, {
+            ...clearSessionOutcomePatch(),
+            lastPublishResult: result,
+            lastSessionStatus: "completed",
+            lastTerminalAction: "published",
+            publishedBranch: result.branch,
+            changeNumber: result.changeNumber,
+            changeUrl: result.changeUrl,
+            pendingAutoMerge: false,
+          });
+          return {
+            published: true,
+            reason: "merge_failed_after_publish",
+            result,
+            changes: changes.map((change) => ({ path: change.path, status: change.status })),
+            verification,
+          };
+        }
+        updateAttempt(config.statePath, attempt.key, {
+          ...clearSessionOutcomePatch(),
+          lastPublishResult: merged,
+          lastSessionStatus: "completed",
+          lastTerminalAction: "merged",
+          publishedBranch: merged.branch,
+          changeNumber: merged.changeNumber,
+          changeUrl: merged.changeUrl,
+          pendingAutoMerge: false,
+        });
+        tlog.info(
+          {
+            branch: merged.branch,
+            changeNumber: merged.changeNumber,
+            changeUrl: merged.changeUrl,
+            mode: merged.mode,
+            fileCount: changes.length,
+          },
+          "fix published and merged",
+        );
+        return {
+          published: true,
+          result: merged,
+          changes: changes.map((change) => ({ path: change.path, status: change.status })),
+          verification,
+        };
+      }
       updateAttempt(config.statePath, attempt.key, {
         ...clearSessionOutcomePatch(),
         lastPublishResult: result,
@@ -54,7 +122,10 @@ export default defineTool({
         publishedBranch: result.branch,
         changeNumber: result.changeNumber,
         changeUrl: result.changeUrl,
-        pendingAutoMerge: result.mode === "auto_merge" && result.changeNumber !== undefined,
+        pendingAutoMerge:
+          result.mode === "auto_merge" &&
+          result.changeNumber !== undefined &&
+          policy.autoMerge.requireSuccessfulPipeline,
       });
       // File paths/counts are safe to log; file contents are never logged.
       tlog.info(

@@ -11,6 +11,7 @@ export function buildBenchmarkRow({
   sample,
   sampleStartedAt,
   scenario,
+  expectedRepairFilesMatch,
   workflowRun,
 }) {
   const attempt = repairResult.attempt;
@@ -24,7 +25,7 @@ export function buildBenchmarkRow({
     scenarioTags: scenario.tags ?? [],
     scenarioMutationCount: scenarioMutations(scenario).length,
     sample,
-    status: classifyBenchmarkStatus({ attempt, prChecks, repairResult }),
+    status: classifyBenchmarkStatus({ attempt, expectedRepairFilesMatch, prChecks, repairResult }),
     startedAt: sampleStartedAt,
     completedAt: new Date().toISOString(),
     expectedRepairFile: scenario.expectedRepairFile,
@@ -61,12 +62,14 @@ export function buildBenchmarkRow({
   };
 }
 
-export function classifyBenchmarkStatus({ attempt, prChecks, repairResult }) {
+export function classifyBenchmarkStatus({ attempt, expectedRepairFilesMatch, prChecks, repairResult }) {
   if (repairResult.status === "no_webhook_attempt") return "no_webhook_attempt";
   if (attempt === undefined) return "no_attempt";
   if (attempt.lastPublishResult !== undefined || attempt.changeNumber !== undefined) {
     if (prChecks === undefined) return "published";
-    if (prChecks.conclusion === "success") return "published_green";
+    if (prChecks.conclusion === "success") {
+      return expectedRepairFilesMatch === false ? "published_unexpected_files" : "published_green";
+    }
     if (prChecks.conclusion === "failure") return "published_check_failed";
     return "published_check_unknown";
   }
@@ -161,6 +164,7 @@ export function summarizeImprovementSignals(rows) {
   const signals = [];
   const noPublish = actionableRows.filter((row) => !String(row.status).startsWith("published")).length;
   const checkFailed = actionableRows.filter((row) => row.status === "published_check_failed").length;
+  const unexpectedFiles = actionableRows.filter((row) => row.status === "published_unexpected_files").length;
   const complexNonGreen = actionableRows.filter((row) => row.scenarioComplexity === "complex").length;
   const noTerminalAction = actionableRows.filter(
     (row) => row.sessionFailureKind === "no_terminal_action" || row.status === "agent_completed_without_publish",
@@ -172,6 +176,9 @@ export function summarizeImprovementSignals(rows) {
   }
   if (checkFailed > 0) {
     signals.push(`${checkFailed} published fix sample(s) still had failing PR checks; compare changed files with expected repair files.`);
+  }
+  if (unexpectedFiles > 0) {
+    signals.push(`${unexpectedFiles} published fix sample(s) changed unexpected files despite passing checks; inspect diagnosis scope and patch locality.`);
   }
   if (complexNonGreen > 0) {
     signals.push(`${complexNonGreen} non-green sample(s) were complex scenarios; review multi-file diagnosis and verification coverage.`);

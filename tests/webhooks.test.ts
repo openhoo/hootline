@@ -26,7 +26,7 @@ test("verifies and normalizes a failed GitHub workflow_run webhook", () => {
         head_sha: "abc123def456",
         html_url: "https://github.com/owner/repo/actions/runs/1001",
         id: 1001,
-        pull_requests: [{ number: 42, base: { ref: "main" } }],
+        pull_requests: [{ number: 42, head: { ref: "feature/fix-ci" }, base: { ref: "main" } }],
         status: "completed",
       },
       repository: { full_name: "owner/repo" },
@@ -48,6 +48,7 @@ test("verifies and normalizes a failed GitHub workflow_run webhook", () => {
     assert.equal(event?.deliveryId, "delivery-1");
     assert.equal(event?.repoSlug, "owner/repo");
     assert.equal(event?.ref, "feature/fix-ci");
+    assert.equal(event?.sourceBranch, "feature/fix-ci");
     assert.equal(event?.targetBranch, "main");
     assert.equal(event?.pullRequestNumber, 42);
     assert.equal(event?.installationId, 12345);
@@ -78,7 +79,7 @@ test("verifies and normalizes a GitLab Standard Webhooks pipeline event", () => 
       path_with_namespace: "group/project",
       web_url: "https://gitlab.com/group/project",
     },
-    merge_requests: [{ iid: 7, target_branch: "main" }],
+    merge_requests: [{ iid: 7, source_branch: "feature/fix-ci", target_branch: "main" }],
     user: { username: "gitlab-user" },
   });
   const rawSecret = Buffer.from("standard-webhook-secret").toString("base64");
@@ -119,6 +120,7 @@ test("verifies and normalizes a GitLab Standard Webhooks pipeline event", () => 
   assert.equal(event?.projectId, "55");
   assert.equal(event?.pipelineId, "2002");
   assert.equal(event?.mergeRequestIid, 7);
+  assert.equal(event?.sourceBranch, "feature/fix-ci");
   assert.equal(event?.targetBranch, "main");
   assert.equal(isFailedConclusion(event?.conclusion ?? ""), true);
 });

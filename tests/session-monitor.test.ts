@@ -64,6 +64,48 @@ test("recognizes successful publish_fix as terminal completion", () => {
   assert.equal(shouldSendRepairContinuation(observation, 0, 1), false);
 });
 
+test("recognizes publish_fix immediate auto-merge as merged terminal completion", () => {
+  const state = createObservationState();
+  observeStreamEvent(state, {
+    type: "action.result",
+    data: {
+      status: "completed",
+      result: {
+        toolName: "publish_fix",
+        output: { published: true, result: { merged: true, branch: "hootline/fix/main/abc123" } },
+      },
+    },
+  });
+  observeStreamEvent(state, { type: "session.completed", data: {} });
+
+  const observation = finalizeObservation(state);
+
+  assert.equal(observation.status, "completed");
+  assert.equal(observation.terminalAction, "merged");
+  assert.equal(observation.failureKind, undefined);
+});
+
+test("classifies completed sessions without terminal action as abandoned", () => {
+  const state = createObservationState();
+  observeStreamEvent(state, {
+    type: "action.result",
+    data: {
+      status: "completed",
+      result: {
+        toolName: "publish_fix",
+        output: { published: false, reason: "verification_failed" },
+      },
+    },
+  });
+  observeStreamEvent(state, { type: "session.completed", data: {} });
+
+  const observation = finalizeObservation(state);
+
+  assert.equal(observation.status, "abandoned");
+  assert.equal(observation.failureKind, "no_terminal_action");
+  assert.equal(shouldSendRepairContinuation(observation, 0, 1), false);
+});
+
 test("does not auto-continue when the model requested human input", () => {
   const state = createObservationState();
   observeStreamEvent(state, { type: "input.requested", data: { requests: [] } });

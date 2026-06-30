@@ -32,6 +32,7 @@ export default defineTool({
         changeNumber: attempt.changeNumber,
         branch: attempt.publishedBranch,
         deleteSourceBranch: policy.autoMerge.deleteSourceBranch,
+        expectedCommitSha: attempt.lastPublishResult?.commitSha,
       });
       updateAttempt(config.statePath, attempt.key, {
         ...clearSessionOutcomePatch(),

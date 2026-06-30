@@ -1,5 +1,5 @@
 import { generateKeyPairSync } from "node:crypto";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -13,6 +13,24 @@ import { getProviderClient } from "../agent/lib/providers/index.ts";
 import { SimulatedGitHubProvider } from "../agent/lib/providers/simulated-github.ts";
 import type { NormalizedPipelineEvent, PublishInput, RepoPolicy, SandboxChange } from "../agent/lib/types.ts";
 import { requireArray, requireRecord, type UnknownRecord } from "../agent/lib/unknown.ts";
+
+function childMarkerCommand(markerPath: string): string {
+  const childScript = [
+    `setTimeout(() => require("node:fs").writeFileSync(${JSON.stringify(markerPath)}, "alive"), 250);`,
+    "setTimeout(() => {}, 2000);",
+  ].join("\n");
+  const parentScript = [
+    'const { spawn } = require("node:child_process");',
+    `const child = spawn(process.execPath, ["-e", ${JSON.stringify(childScript)}], { stdio: "ignore" });`,
+    "child.unref();",
+    "setTimeout(() => {}, 2000);",
+  ].join("\n");
+  return `${JSON.stringify(process.execPath)} -e ${JSON.stringify(parentScript)}`;
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
 
 test("provider API errors redact token-shaped response bodies", () => {
   assert.throws(
@@ -242,6 +260,84 @@ test("GitHub publish creates base64 blobs instead of UTF-8 tree content", async 
   }
 });
 
+test("GitHub posts a commit comment even when pipeline URL is absent", async () => {
+  const previousFetch = globalThis.fetch;
+  const previousAppId = process.env.GITHUB_APP_ID;
+  const previousPrivateKey = process.env.GITHUB_APP_PRIVATE_KEY;
+  const { privateKey } = generateKeyPairSync("rsa", { modulusLength: 2048 });
+  const calls: ProviderCall[] = [];
+
+  process.env.GITHUB_APP_ID = "comment-fallback-test";
+  process.env.GITHUB_APP_PRIVATE_KEY = privateKey
+    .export({ format: "pem", type: "pkcs8" })
+    .toString();
+  globalThis.fetch = async (input, init = {}) => {
+    const call = readCall(input, init);
+    calls.push(call);
+    if (call.path === "/app/installations/123/access_tokens") {
+      return jsonResponse({ token: "ghs_installation_secret", expires_at: futureIso() });
+    }
+    if (call.path === "/repos/owner/repo/commits/abc123def4567890/comments") {
+      assert.deepEqual(call.body, { body: "Blocked by policy." });
+      return jsonResponse({ id: 1 });
+    }
+    throw new Error(`Unexpected GitHub request: ${call.method} ${call.path}`);
+  };
+
+  try {
+    await new GitHubProvider().postComment(
+      { ...makeGitHubEvent(), pipelineUrl: undefined },
+      "Blocked by policy.",
+    );
+    assert.equal(calls.some((call) => call.path === "/repos/owner/repo/commits/abc123def4567890/comments"), true);
+  } finally {
+    globalThis.fetch = previousFetch;
+    restoreEnv("GITHUB_APP_ID", previousAppId);
+    restoreEnv("GITHUB_APP_PRIVATE_KEY", previousPrivateKey);
+  }
+});
+
+test("GitHub merge pins the checked pull request head", async () => {
+  const previousFetch = globalThis.fetch;
+  const previousAppId = process.env.GITHUB_APP_ID;
+  const previousPrivateKey = process.env.GITHUB_APP_PRIVATE_KEY;
+  const { privateKey } = generateKeyPairSync("rsa", { modulusLength: 2048 });
+
+  process.env.GITHUB_APP_ID = "merge-pin-test";
+  process.env.GITHUB_APP_PRIVATE_KEY = privateKey
+    .export({ format: "pem", type: "pkcs8" })
+    .toString();
+  globalThis.fetch = async (input, init = {}) => {
+    const call = readCall(input, init);
+    if (call.path === "/app/installations/123/access_tokens") {
+      return jsonResponse({ token: "ghs_installation_secret", expires_at: futureIso() });
+    }
+    if (call.path === "/repos/owner/repo/pulls/42/merge") {
+      const body = requireRecord(call.body, "GitHub merge request body");
+      assert.equal(body.sha, "fix1234567890");
+      assert.equal(body.merge_method, "squash");
+      return jsonResponse({ sha: "merge-sha", merged: true });
+    }
+    throw new Error(`Unexpected GitHub request: ${call.method} ${call.path}`);
+  };
+
+  try {
+    const result = await new GitHubProvider().mergeChange({
+      event: makeGitHubEvent(),
+      changeNumber: 42,
+      branch: "hootline/fix/main/abc123def456",
+      deleteSourceBranch: false,
+      expectedCommitSha: "fix1234567890",
+    });
+    assert.equal(result.commitSha, "merge-sha");
+    assert.equal(result.merged, true);
+  } finally {
+    globalThis.fetch = previousFetch;
+    restoreEnv("GITHUB_APP_ID", previousAppId);
+    restoreEnv("GITHUB_APP_PRIVATE_KEY", previousPrivateKey);
+  }
+});
+
 test("GitLab publish updates existing files and creates absent files on a reused fixer branch", async () => {
   const previousFetch = globalThis.fetch;
   const previousToken = process.env.GITLAB_TOKEN;
@@ -285,7 +381,7 @@ test("GitLab publish updates existing files and creates absent files on a reused
     if (call.method === "POST" && call.path === "/api/v4/projects/55/merge_requests") {
       const body = requireRecord(call.body, "GitLab create merge request body");
       assert.equal(body.source_branch, expectedBranch);
-      assert.equal(body.target_branch, "main");
+      assert.equal(body.target_branch, "feature/fix ci");
       assert.equal(body.remove_source_branch, false);
       return jsonResponse({ iid: 7, web_url: "https://gitlab.example.test/group/project/-/merge_requests/7" });
     }
@@ -318,6 +414,41 @@ test("GitLab publish updates existing files and creates absent files on a reused
   }
 });
 
+test("GitLab merge pins the checked merge request head", async () => {
+  const previousFetch = globalThis.fetch;
+  const previousToken = process.env.GITLAB_TOKEN;
+  const previousBaseUrl = process.env.GITLAB_BASE_URL;
+
+  process.env.GITLAB_TOKEN = "glpat-secret";
+  process.env.GITLAB_BASE_URL = "https://gitlab.example.test";
+  globalThis.fetch = async (input, init = {}) => {
+    const call = readCall(input, init);
+    if (call.path === "/api/v4/projects/55/merge_requests/7/merge") {
+      const body = requireRecord(call.body, "GitLab merge request body");
+      assert.equal(body.sha, "fix1234567890");
+      assert.equal(body.squash, true);
+      return jsonResponse({ merge_commit_sha: "merge-sha" });
+    }
+    throw new Error(`Unexpected GitLab request: ${call.method} ${call.path}`);
+  };
+
+  try {
+    const result = await new GitLabProvider().mergeChange({
+      event: makeGitLabEvent(),
+      changeNumber: 7,
+      branch: "hootline/fix/main/fedcba987654",
+      deleteSourceBranch: true,
+      expectedCommitSha: "fix1234567890",
+    });
+    assert.equal(result.commitSha, "merge-sha");
+    assert.equal(result.merged, true);
+  } finally {
+    globalThis.fetch = previousFetch;
+    restoreEnv("GITLAB_TOKEN", previousToken);
+    restoreEnv("GITLAB_BASE_URL", previousBaseUrl);
+  }
+});
+
 test("provider registry can route GitHub calls to the simulated backend", () => {
   const previousBackend = process.env.HOOTLINE_GITHUB_PROVIDER_BACKEND;
   try {
@@ -336,7 +467,14 @@ test("simulated GitHub provider reads policy, archives, publishes, and records c
   const root = mkdtempSync(join(tmpdir(), "hootline-sim-provider-"));
   const repoRoot = join(root, "repo");
   const statePath = join(root, "simulator-state.json");
-  const event = { ...makeGitHubEvent(), repoSlug: "owner/simulated", sha: "simulatedsha123" };
+  const event = {
+    ...makeGitHubEvent(),
+    repoSlug: "owner/simulated",
+    ref: "feature/fix-ci",
+    sourceBranch: "feature/fix-ci",
+    targetBranch: "main",
+    sha: "simulatedsha123",
+  };
   mkdirSync(join(repoRoot, "src"), { recursive: true });
   writeFileSync(
     join(repoRoot, ".hootline.yaml"),
@@ -402,11 +540,78 @@ test("simulated GitHub provider reads policy, archives, publishes, and records c
     assert.equal(result.changeNumber, 1);
     const state = JSON.parse(readFileSync(statePath, "utf8"));
     const pr = requireRecord(state.pullRequests["owner/simulated#1"], "simulated pull request");
+    assert.equal(pr.baseRef, "feature/fix-ci");
     assert.equal(pr.checkConclusion, "success");
     const firstCheck = requireRecord(requireArray(pr.checks, "simulated checks")[0], "simulated check");
     assert.equal(firstCheck.conclusion, "SUCCESS");
   } finally {
     restoreEnv("HOOTLINE_SIMULATOR_STATE_PATH", previousStatePath);
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("simulated GitHub provider cleans up child processes after check timeout", async () => {
+  const previousStatePath = process.env.HOOTLINE_SIMULATOR_STATE_PATH;
+  const previousTimeout = process.env.HOOTLINE_SIMULATED_FIXTURE_COMMAND_TIMEOUT_MS;
+  const root = mkdtempSync(join(tmpdir(), "hootline-sim-provider-timeout-"));
+  const repoRoot = join(root, "repo");
+  const statePath = join(root, "simulator-state.json");
+  const markerPath = join(root, "child-lived");
+  const event = { ...makeGitHubEvent(), repoSlug: "owner/simulated", sha: "timeoutsha123" };
+  mkdirSync(join(repoRoot, "src"), { recursive: true });
+  writeFileSync(join(repoRoot, "src/value.js"), "export const value = 1;\n");
+  writeFileSync(
+    statePath,
+    `${JSON.stringify(
+      {
+        samples: {
+          "owner/simulated@timeoutsha123": {
+            repoSlug: "owner/simulated",
+            sha: "timeoutsha123",
+            worktreePath: repoRoot,
+            failureContext: { summary: "failed", jobs: [] },
+          },
+        },
+        pullRequests: {},
+        nextPullRequestNumber: 1,
+      },
+      null,
+      2,
+    )}\n`,
+  );
+  process.env.HOOTLINE_SIMULATOR_STATE_PATH = statePath;
+  process.env.HOOTLINE_SIMULATED_FIXTURE_COMMAND_TIMEOUT_MS = "75";
+
+  try {
+    const provider = new SimulatedGitHubProvider();
+    const result = await provider.publishFix({
+      event,
+      policy: makePolicy("github", "owner/simulated", "pr_mr", {
+        allowedFileGlobs: ["src/**"],
+        verificationCommands: [childMarkerCommand(markerPath)],
+      }),
+      changes: [
+        {
+          status: "modified",
+          path: "src/value.js",
+          contentBase64: Buffer.from("export const value = 2;\n").toString("base64"),
+        },
+      ],
+      summary: "Fix simulated value.",
+    });
+
+    assert.equal(result.changeNumber, 1);
+    const state = JSON.parse(readFileSync(statePath, "utf8"));
+    const pr = requireRecord(state.pullRequests["owner/simulated#1"], "simulated pull request");
+    assert.equal(pr.checkConclusion, "failure");
+    const firstCheck = requireRecord(requireArray(pr.checks, "simulated checks")[0], "simulated check");
+    assert.equal(firstCheck.timedOut, true);
+    assert.equal(firstCheck.exitCode, 124);
+    await sleep(500);
+    assert.equal(existsSync(markerPath), false);
+  } finally {
+    restoreEnv("HOOTLINE_SIMULATOR_STATE_PATH", previousStatePath);
+    restoreEnv("HOOTLINE_SIMULATED_FIXTURE_COMMAND_TIMEOUT_MS", previousTimeout);
     rmSync(root, { recursive: true, force: true });
   }
 });

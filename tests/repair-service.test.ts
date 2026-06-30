@@ -262,6 +262,49 @@ test("repair service releases delivery for provider redelivery after provider re
   }
 });
 
+test("repair service releases delivery when a session completes without terminal action", async () => {
+  const previousStatePath = process.env.HOOTLINE_STATE_PATH;
+  const root = mkdtempSync(join(tmpdir(), "hootline-repair-service-no-terminal-"));
+  const statePath = join(root, "state.json");
+  process.env.HOOTLINE_STATE_PATH = statePath;
+  const event = makeEvent();
+  const provider = makeProvider(event);
+  const restoreProvider = registerProviderClient("github", provider);
+  const waitTasks: Promise<unknown>[] = [];
+  const fakeSend = async (): Promise<unknown> =>
+    makeSession("session-no-terminal", [
+      {
+        type: "action.result",
+        data: {
+          status: "completed",
+          result: { toolName: "publish_fix", output: { published: false, reason: "verification_failed" } },
+        },
+      },
+      { type: "session.completed", data: {} },
+    ]);
+
+  const response = await dispatchPipelineEvent(
+    event,
+    fakeSend as SendFn,
+    (task) => waitTasks.push(task),
+  );
+
+  try {
+    assert.equal(response.status, 200);
+    await Promise.all(waitTasks);
+
+    const state = loadState(statePath);
+    const attempts = Object.values(state.attempts);
+    assert.equal(attempts[0]?.lastSessionStatus, "abandoned");
+    assert.equal(attempts[0]?.lastSessionFailureKind, "no_terminal_action");
+    assert.equal(state.processedDeliveries["github:delivery-1"], undefined);
+  } finally {
+    restoreProvider();
+    restoreEnv("HOOTLINE_STATE_PATH", previousStatePath);
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("repair service retries retryable provider errors thrown before a session stream exists", async () => {
   const previousStatePath = process.env.HOOTLINE_STATE_PATH;
   const previousRetries = process.env.HOOTLINE_PROVIDER_ERROR_RETRIES;
@@ -392,7 +435,89 @@ test("gitlab secret-token success webhook cannot bypass pending auto-merge polic
     assert.equal(response.status, 200);
     await Promise.all(waitTasks);
     assert.equal(mergeCalls, 0);
-    assert.equal(loadState(statePath).attempts[key]?.pendingAutoMerge, true);
+    const state = loadState(statePath);
+    assert.equal(state.attempts[key]?.pendingAutoMerge, true);
+    assert.equal(state.processedDeliveries["gitlab:delivery-success-secret-token"], undefined);
+  } finally {
+    restoreProvider();
+    restoreEnv("HOOTLINE_STATE_PATH", previousStatePath);
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("successful auto-merge followup records merged terminal state", async () => {
+  const previousStatePath = process.env.HOOTLINE_STATE_PATH;
+  const root = mkdtempSync(join(tmpdir(), "hootline-repair-service-merge-success-"));
+  const statePath = join(root, "state.json");
+  process.env.HOOTLINE_STATE_PATH = statePath;
+  const branch = "hootline/fix/main/fixsha";
+  const commitSha = "fixsha1234567890";
+  const failureEvent = makeEvent();
+  const key = eventAttemptKey(failureEvent);
+  recordAttempt(statePath, failureEvent, makePolicy({ mode: "auto_merge" }));
+  updateAttempt(statePath, key, {
+    lastSessionStatus: "completed",
+    lastTerminalAction: "published",
+    pendingAutoMerge: true,
+    publishedBranch: branch,
+    changeNumber: 42,
+    lastPublishResult: {
+      provider: "github",
+      mode: "auto_merge",
+      branch,
+      commitSha,
+      changeNumber: 42,
+      changeUrl: "https://github.com/owner/repo/pull/42",
+      message: "Published fix PR #42.",
+    },
+  });
+
+  const restoreProvider = registerProviderClient("github", {
+    ...makeProvider(failureEvent),
+    async mergeChange(input) {
+      assert.equal(input.expectedCommitSha, commitSha);
+      return {
+        provider: "github",
+        mode: "auto_merge",
+        branch: input.branch,
+        commitSha: "mergesha1234567890",
+        changeNumber: input.changeNumber,
+        changeUrl: "https://github.com/owner/repo/pull/42",
+        merged: true,
+        message: "Merged GitHub PR #42.",
+      };
+    },
+  });
+  const waitTasks: Promise<unknown>[] = [];
+
+  try {
+    const response = await dispatchPipelineEvent(
+      {
+        ...failureEvent,
+        id: "github:owner/repo:3003:fixsha1234567890",
+        deliveryId: "delivery-success-merge-ok",
+        pipelineId: "3003",
+        runId: "3003",
+        ref: branch,
+        sha: commitSha,
+        status: "completed",
+        conclusion: "success",
+      },
+      (() => {
+        throw new Error("send must not be called for success webhooks");
+      }) as SendFn,
+      (task) => waitTasks.push(task),
+    );
+
+    assert.equal(response.status, 200);
+    await Promise.all(waitTasks);
+    const state = loadState(statePath);
+    assert.equal(state.attempts[key]?.pendingAutoMerge, false);
+    assert.equal(state.attempts[key]?.lastTerminalAction, "merged");
+    assert.equal(state.attempts[key]?.lastSessionStatus, "completed");
+    assert.equal(state.attempts[key]?.lastPublishResult?.commitSha, "mergesha1234567890");
+    assert.equal(state.attempts[key]?.publishedBranch, branch);
+    assert.equal(state.attempts[key]?.changeNumber, 42);
   } finally {
     restoreProvider();
     restoreEnv("HOOTLINE_STATE_PATH", previousStatePath);
@@ -426,7 +551,8 @@ test("auto-merge followup failure restores claim and releases success delivery",
 
   const restoreProvider = registerProviderClient("github", {
     ...makeProvider(failureEvent),
-    async mergeChange() {
+    async mergeChange(input) {
+      assert.equal(input.expectedCommitSha, commitSha);
       throw new Error("temporary merge API outage");
     },
   });
@@ -458,6 +584,40 @@ test("auto-merge followup failure restores claim and releases success delivery",
     assert.equal(state.processedDeliveries["github:delivery-success-merge-fail"], undefined);
   } finally {
     restoreProvider();
+    restoreEnv("HOOTLINE_STATE_PATH", previousStatePath);
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("unmatched successful pipeline followup releases delivery for later redelivery", async () => {
+  const previousStatePath = process.env.HOOTLINE_STATE_PATH;
+  const root = mkdtempSync(join(tmpdir(), "hootline-repair-service-success-miss-"));
+  const statePath = join(root, "state.json");
+  process.env.HOOTLINE_STATE_PATH = statePath;
+  const waitTasks: Promise<unknown>[] = [];
+
+  try {
+    const response = await dispatchPipelineEvent(
+      makeEvent({
+        id: "github:owner/repo:3003:fixsha1234567890",
+        deliveryId: "delivery-success-unmatched",
+        pipelineId: "3003",
+        runId: "3003",
+        ref: "hootline/fix/main/fixsha",
+        sha: "fixsha1234567890",
+        status: "completed",
+        conclusion: "success",
+      }),
+      (() => {
+        throw new Error("send must not be called for success webhooks");
+      }) as SendFn,
+      (task) => waitTasks.push(task),
+    );
+
+    assert.equal(response.status, 200);
+    await Promise.all(waitTasks);
+    assert.equal(loadState(statePath).processedDeliveries["github:delivery-success-unmatched"], undefined);
+  } finally {
     restoreEnv("HOOTLINE_STATE_PATH", previousStatePath);
     rmSync(root, { recursive: true, force: true });
   }

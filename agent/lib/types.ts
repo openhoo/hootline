@@ -49,6 +49,7 @@ export interface NormalizedPipelineEvent {
   actor?: string | undefined;
   pullRequestNumber?: number | undefined;
   mergeRequestIid?: number | undefined;
+  sourceBranch?: string | undefined;
   targetBranch?: string | undefined;
   eventName: string;
   receivedAt: string;
@@ -87,6 +88,7 @@ export interface MergeChangeInput {
   changeNumber: number;
   branch: string;
   deleteSourceBranch: boolean;
+  expectedCommitSha?: string | undefined;
 }
 
 export interface PublishResult {

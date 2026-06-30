@@ -114,6 +114,7 @@ const normalizedPipelineEventSchema = z
     actor: z.string().optional(),
     pullRequestNumber: z.number().optional(),
     mergeRequestIid: z.number().optional(),
+    sourceBranch: z.string().optional(),
     targetBranch: z.string().optional(),
     eventName: z.string(),
     receivedAt: z.string(),
@@ -307,10 +308,51 @@ export function recordAttempt(
           firstSeenAt: now,
           lastSeenAt: now,
         }
-      : { ...existing, event, attempts: existing.attempts + 1, lastSeenAt: now };
+      : resetAttemptForRetry(existing, event, policy, now);
   state.attempts[key] = next;
   saveState(path, state);
   return next;
+}
+
+function resetAttemptForRetry(
+  existing: AttemptRecord,
+  event: NormalizedPipelineEvent,
+  policy: RepoPolicy,
+  now: string,
+): AttemptRecord {
+  return {
+    ...existing,
+    event,
+    policy,
+    attempts: existing.attempts + 1,
+    lastSeenAt: now,
+    dispatchedAt: undefined,
+    lastSessionId: undefined,
+    lastSessionStatus: undefined,
+    lastSessionFinishReason: undefined,
+    lastSessionFailureKind: undefined,
+    lastSessionFailure: undefined,
+    lastSessionEndedAt: undefined,
+    lastToolSequence: undefined,
+    lastFailedTools: undefined,
+    lastTerminalAction: undefined,
+    lastInputTokens: undefined,
+    lastOutputTokens: undefined,
+    lastEventsSeen: undefined,
+    continuationsUsed: undefined,
+    providerErrorRetriesUsed: undefined,
+    repoStagedAt: undefined,
+    repoStagedFiles: undefined,
+    repoStagedBytes: undefined,
+    lastFailureContext: undefined,
+    lastVerification: undefined,
+    lastPublishResult: undefined,
+    publishedBranch: undefined,
+    changeUrl: undefined,
+    changeNumber: undefined,
+    pendingAutoMerge: undefined,
+    rerunRequests: undefined,
+  };
 }
 
 // Atomically claims a repair slot for an event as one critical section so the

@@ -41,7 +41,9 @@ import {
 } from "./benchmarks/simulated-app.mjs";
 
 const DEFAULTS = {
+  artifactDir: process.env.HOOTLINE_SIMULATED_ARTIFACT_DIR,
   concurrency: readEnvInteger("HOOTLINE_SIMULATED_CONCURRENCY", 1),
+  fixtureCommandTimeoutMs: readEnvInteger("HOOTLINE_SIMULATED_FIXTURE_COMMAND_TIMEOUT_MS", 60_000),
   fixtureTemplatePath: process.env.HOOTLINE_SIMULATED_FIXTURE_TEMPLATE_PATH,
   mainBranch: process.env.HOOTLINE_SIMULATED_MAIN_BRANCH ?? "main",
   pollIntervalMs: readEnvInteger("HOOTLINE_SIMULATED_POLL_INTERVAL_MS", 2_000),
@@ -65,6 +67,8 @@ export {
   prepareBenchmarkAppWorkspace,
 } from "./benchmarks/simulated-app.mjs";
 
+export { buildBenchmarkServerEnv, buildFailureLog, parseArgs, runFixtureCommand };
+
 if (import.meta.url === pathToFileURL(process.argv[1]).href) {
   const options = parseArgs(process.argv.slice(2));
   if (options.help) {
@@ -83,7 +87,10 @@ export async function main(options) {
   const scenarios = resolveScenarios(options.scenarios, { projects: options.projects });
   const startedAt = new Date();
   const runId = `${startedAt.toISOString().replace(/[:.]/g, "-")}-${randomUUID().slice(0, 8)}`;
-  const artifactDir = resolve(sourceRoot, "var", "simulated-benchmarks", runId);
+  const artifactDir = resolve(
+    sourceRoot,
+    options.artifactDir ?? resolve("var", "simulated-benchmarks", runId),
+  );
   const statePath = resolve(artifactDir, "hootline-state.json");
   const simulatorStatePath = resolve(artifactDir, "simulator-state.json");
 
@@ -93,8 +100,8 @@ export async function main(options) {
   if (options.fixtureTemplatePath !== undefined) {
     console.log(`Fixture template override: ${resolve(sourceRoot, options.fixtureTemplatePath)}`);
   }
-  console.log(`State path: ${statePath}`);
-  console.log(`Simulator state path: ${simulatorStatePath}`);
+  console.log(`State path: ${options.dryRun ? "(not written in dry-run mode)" : statePath}`);
+  console.log(`Simulator state path: ${options.dryRun ? "(not written in dry-run mode)" : simulatorStatePath}`);
   console.log(`Scenarios: ${scenarios.map((scenario) => scenario.id).join(", ")}`);
   console.log(`Samples per scenario: ${options.samples}`);
   console.log(`Concurrency: ${options.concurrency}`);
@@ -107,15 +114,17 @@ export async function main(options) {
       throw new Error(`Fixture template path does not exist for ${scenario.id}: ${fixtureTemplatePath}`);
     }
   }
-  mkdirSync(artifactDir, { recursive: true });
-  writeSimulatorState(simulatorStatePath, {
-    samples: {},
-    pullRequests: {},
-    nextPullRequestNumber: 1,
-    comments: [],
-    reruns: [],
-    merges: [],
-  });
+  if (!options.dryRun) {
+    mkdirSync(artifactDir, { recursive: true });
+    writeSimulatorState(simulatorStatePath, {
+      samples: {},
+      pullRequests: {},
+      nextPullRequestNumber: 1,
+      comments: [],
+      reruns: [],
+      merges: [],
+    });
+  }
 
   let server;
   let modelEnv = process.env;
@@ -125,6 +134,7 @@ export async function main(options) {
     simulatorStatePath,
     sourceRoot,
     statePath,
+    fixtureCommandTimeoutMs: options.fixtureCommandTimeoutMs,
     webhookSecret: options.webhookSecret,
   }).then((started) => {
     server = started;
@@ -153,14 +163,18 @@ export async function main(options) {
         statePath,
       });
       rows[index] = row;
-      writeArtifacts({ artifactDir, options, rows: compactRows(rows), scenarios, startedAt });
+      if (!options.dryRun) {
+        writeArtifacts({ artifactDir, options, rows: compactRows(rows), scenarios, startedAt });
+      }
     });
   } finally {
     if (server !== undefined) await stopBenchmarkServer(server);
   }
 
   const completedRows = compactRows(rows);
-  writeArtifacts({ artifactDir, options, rows: completedRows, scenarios, startedAt });
+  if (!options.dryRun) {
+    writeArtifacts({ artifactDir, options, rows: completedRows, scenarios, startedAt });
+  }
   printSummary(completedRows, artifactDir, options.dryRun);
 }
 
@@ -179,25 +193,31 @@ async function runScenarioSample({
   console.log("");
   console.log(`== ${scenario.projectId}/${scenario.id} sample ${sample}/${options.samples} ==`);
 
+  const fixtureTemplatePath = resolve(process.cwd(), options.fixtureTemplatePath ?? scenario.templatePath);
+  if (options.dryRun) {
+    assertScenarioBaseline(fixtureTemplatePath, scenario);
+    const policy = loadFixturePolicy(fixtureTemplatePath, scenario);
+    return dryRunRow({ policy, sample, sampleStartedAt, scenario });
+  }
+
   const sampleDir = resolve(artifactDir, "samples", `${scenario.id}-${sample}`);
   const repoPath = resolve(sampleDir, "repo");
-  const fixtureTemplatePath = resolve(process.cwd(), options.fixtureTemplatePath ?? scenario.templatePath);
   materializeFixtureTemplate(fixtureTemplatePath, repoPath);
   assertScenarioBaseline(repoPath, scenario);
   const policy = loadFixturePolicy(repoPath, scenario);
 
-  if (options.dryRun) {
-    return dryRunRow({ policy, sample, sampleStartedAt, scenario });
-  }
-
-  const baseline = runFixtureCommand(repoPath, policy.verificationCommands);
+  const baseline = runFixtureCommand(repoPath, policy.verificationCommands, {
+    timeoutMs: options.fixtureCommandTimeoutMs,
+  });
   if (baseline.status !== 0) {
     writeCommandArtifact(sampleDir, "baseline", baseline);
     throw new Error(`Baseline verification failed for ${scenario.id}.`);
   }
 
   applyScenarioMutation(repoPath, scenario);
-  const failure = runFixtureCommand(repoPath, policy.verificationCommands);
+  const failure = runFixtureCommand(repoPath, policy.verificationCommands, {
+    timeoutMs: options.fixtureCommandTimeoutMs,
+  });
   writeCommandArtifact(sampleDir, "failure", failure);
   if (failure.status === 0) {
     throw new Error(`Scenario ${scenario.id} did not produce a failing fixture test.`);
@@ -215,7 +235,7 @@ async function runScenarioSample({
     scenarioId: scenario.id,
     projectId: scenario.projectId,
     failureContext: {
-      summary: `Simulated GitHub workflow failed for ${scenario.projectName}: ${scenario.title}. Expected repair files: ${scenarioExpectedRepairFiles(scenario).join(", ")}.`,
+      summary: `Simulated GitHub workflow failed for ${scenario.projectName}: ${scenario.title}.`,
       jobs: [
         {
           id: String(pipelineId),
@@ -261,8 +281,11 @@ async function runScenarioSample({
       ? undefined
       : readSimulatedPullRequest(simulatorStatePath, options.repo, repairResult.attempt.changeNumber);
 
+  const actualRepairFiles = simulatedPullRequest?.changes.map((change) => change.path) ?? [];
+  const expectedRepairFilesMatch = sameStringSet(actualRepairFiles, scenarioExpectedRepairFiles(scenario));
   const row = {
     ...buildBenchmarkRow({
+      expectedRepairFilesMatch,
       inspector: undefined,
       modelEnv,
       prChecks,
@@ -274,11 +297,8 @@ async function runScenarioSample({
     }),
     simulated: true,
     verificationCommands: policy.verificationCommands,
-    actualRepairFiles: simulatedPullRequest?.changes.map((change) => change.path) ?? [],
-    expectedRepairFilesMatch: sameStringSet(
-      simulatedPullRequest?.changes.map((change) => change.path) ?? [],
-      scenarioExpectedRepairFiles(scenario),
-    ),
+    actualRepairFiles,
+    expectedRepairFilesMatch,
     simulatedCheckConclusion: simulatedPullRequest?.checkConclusion,
   };
   writeFileSync(resolve(sampleDir, "row.json"), `${JSON.stringify(row, null, 2)}\n`);
@@ -403,6 +423,7 @@ async function deliverGitHubWorkflowRun({ deliveryId, options, pipelineId, serve
 
 async function startBenchmarkServer({
   artifactDir,
+  fixtureCommandTimeoutMs,
   mockModel,
   simulatorStatePath,
   sourceRoot,
@@ -410,17 +431,14 @@ async function startBenchmarkServer({
   webhookSecret,
 }) {
   const port = await findFreePort();
-  const env = {
-    ...loadBenchmarkEnvFiles(sourceRoot),
-    GITHUB_WEBHOOK_SECRET: webhookSecret,
-    HOOTLINE_GITHUB_PROVIDER_BACKEND: "simulated",
-    HOOTLINE_SIMULATOR_STATE_PATH: simulatorStatePath,
-    HOOTLINE_STATE_PATH: statePath,
-  };
-  if (mockModel) {
-    env.HOOTLINE_MODEL_PROVIDER = "mock";
-    env.HOOTLINE_MODEL = "hootline-simulated-script";
-  }
+  const env = buildBenchmarkServerEnv({
+    fixtureCommandTimeoutMs,
+    mockModel,
+    simulatorStatePath,
+    sourceRoot,
+    statePath,
+    webhookSecret,
+  });
 
   const appRoot = prepareBenchmarkAppWorkspace({ artifactDir, sourceRoot });
   writeFileSync(
@@ -461,6 +479,29 @@ async function startBenchmarkServer({
   }
   console.log(`Started simulated benchmark server: ${url}`);
   return { child, env, logStream, url };
+}
+
+function buildBenchmarkServerEnv({
+  fixtureCommandTimeoutMs,
+  mockModel,
+  simulatorStatePath,
+  sourceRoot,
+  statePath,
+  webhookSecret,
+}) {
+  const env = {
+    ...loadBenchmarkEnvFiles(sourceRoot),
+    GITHUB_WEBHOOK_SECRET: webhookSecret,
+    HOOTLINE_GITHUB_PROVIDER_BACKEND: "simulated",
+    HOOTLINE_SIMULATED_FIXTURE_COMMAND_TIMEOUT_MS: String(fixtureCommandTimeoutMs ?? DEFAULTS.fixtureCommandTimeoutMs),
+    HOOTLINE_SIMULATOR_STATE_PATH: simulatorStatePath,
+    HOOTLINE_STATE_PATH: statePath,
+  };
+  if (mockModel) {
+    env.HOOTLINE_MODEL_PROVIDER = "mock";
+    env.HOOTLINE_MODEL = "hootline-simulated-script";
+  }
+  return env;
 }
 
 async function stopBenchmarkServer(server) {
@@ -521,30 +562,61 @@ function loadFixturePolicy(repoPath, scenario) {
   };
 }
 
-function runFixtureCommand(repoPath, verificationCommands) {
+function runFixtureCommand(repoPath, verificationCommands, options = {}) {
+  const timeoutMs = options.timeoutMs ?? DEFAULTS.fixtureCommandTimeoutMs;
   const outputs = [];
   for (const command of verificationCommands) {
     const result = spawnSync("bash", ["-lc", `set -euo pipefail; ${command}`], {
       cwd: repoPath,
+      detached: true,
       encoding: "utf8",
       maxBuffer: 1024 * 1024,
       stdio: "pipe",
+      timeout: timeoutMs,
     });
+    const timedOut = isTimeoutResult(result);
+    if (timedOut) terminateProcessGroup(result.pid);
+    const stderr = [
+      result.stderr ?? "",
+      timedOut ? `Command timed out after ${timeoutMs}ms.` : "",
+    ].filter(Boolean).join("\n");
     outputs.push({
       command,
-      status: result.status ?? 1,
+      status: timedOut ? 124 : result.status ?? 1,
       stdout: result.stdout ?? "",
-      stderr: result.stderr ?? "",
+      stderr,
+      timedOut,
     });
-    if ((result.status ?? 1) !== 0) break;
+    if (timedOut || (result.status ?? 1) !== 0) break;
   }
   return {
     command: verificationCommands.join(" && "),
     commands: outputs,
     status: outputs.every((output) => output.status === 0) ? 0 : 1,
+    timedOut: outputs.some((output) => output.timedOut === true),
     stdout: outputs.map((output) => output.stdout).join("\n"),
     stderr: outputs.map((output) => output.stderr).join("\n"),
   };
+}
+
+function isTimeoutResult(result) {
+  return result.error?.code === "ETIMEDOUT";
+}
+
+function terminateProcessGroup(pid) {
+  if (!Number.isSafeInteger(pid) || pid <= 0) return;
+  try {
+    process.kill(-pid, "SIGTERM");
+  } catch {
+    return;
+  }
+  sleepSync(100);
+  try {
+    process.kill(-pid, 0);
+    process.kill(-pid, "SIGKILL");
+  } catch {
+    // The process group already exited after SIGTERM.
+  }
 }
 
 function writeCommandArtifact(sampleDir, label, result) {
@@ -642,7 +714,6 @@ function buildFailureLog(scenario, failure) {
   return [
     `Scenario: ${scenario.id}`,
     `Expected failure: ${scenario.expectedFailure}`,
-    `Expected repair files: ${scenarioExpectedRepairFiles(scenario).join(", ")}`,
     "",
     failure.stdout,
     failure.stderr,
@@ -887,13 +958,19 @@ function parseArgs(argv) {
       continue;
     }
 
-    const [name, inlineValue] = arg.split("=", 2);
+    const { name, inlineValue } = splitOption(arg);
     const value = inlineValue ?? argv[++i];
     if (value === undefined) fail(`Missing value for ${arg}`);
 
     switch (name) {
+      case "--artifact-dir":
+        parsed.artifactDir = value;
+        break;
       case "--concurrency":
         parsed.concurrency = readPositiveInteger(value, name);
+        break;
+      case "--fixture-command-timeout-ms":
+        parsed.fixtureCommandTimeoutMs = readPositiveInteger(value, name);
         break;
       case "--fixture-template-path":
         parsed.fixtureTemplatePath = value;
@@ -933,6 +1010,15 @@ function parseArgs(argv) {
   return parsed;
 }
 
+function splitOption(arg) {
+  const equalsIndex = arg.indexOf("=");
+  if (equalsIndex === -1) return { name: arg, inlineValue: undefined };
+  return {
+    name: arg.slice(0, equalsIndex),
+    inlineValue: arg.slice(equalsIndex + 1),
+  };
+}
+
 function printHelp() {
   console.log(`Usage: node scripts/simulated-benchmark.mjs [options]
 
@@ -941,6 +1027,7 @@ Run Hootline's full Eve repair loop against a local simulated GitHub provider.
 Options:
   --dry-run                       Print scenario metadata without starting a server
   --mock-model                    Use the deterministic Hootline mock model
+  --artifact-dir <path>           Write non-dry-run artifacts to this exact directory
   --scenarios <ids|all>           Comma-separated scenario ids (default: ${DEFAULTS.scenarios})
   --samples <n>                   Samples per scenario (default: ${DEFAULTS.samples})
   --concurrency <n>               Scenario samples to run concurrently (default: ${DEFAULTS.concurrency})
@@ -948,6 +1035,7 @@ Options:
   --repo <owner/name>             Simulated repository slug (default: ${DEFAULTS.repo})
   --server-url <url>              Use an already-running Hootline server
   --fixture-template-path <path>  Override fixture template path for single-template debugging
+  --fixture-command-timeout-ms <ms> Timeout for fixture verification commands (default: ${DEFAULTS.fixtureCommandTimeoutMs})
   --repair-timeout-ms <ms>        Repair timeout per sample (default: ${DEFAULTS.repairTimeoutMs})
   --poll-interval-ms <ms>         State polling interval (default: ${DEFAULTS.pollIntervalMs})
   --webhook-secret <secret>       Synthetic GitHub webhook secret

@@ -6,8 +6,9 @@ import test from "node:test";
 
 import mergeChangeTool from "../agent/tools/merge_change.ts";
 import postProviderCommentTool from "../agent/tools/post_provider_comment.ts";
+import publishFixTool from "../agent/tools/publish_fix.ts";
 import { registerProviderClient } from "../agent/lib/providers/index.ts";
-import { eventAttemptKey, recordAttempt, updateAttempt } from "../agent/lib/state.ts";
+import { eventAttemptKey, loadState, recordAttempt, updateAttempt } from "../agent/lib/state.ts";
 import type {
   FailureContext,
   MergeChangeInput,
@@ -68,6 +69,113 @@ test("post_provider_comment redacts model-authored secrets before provider posti
   });
 });
 
+test("publish_fix immediately merges auto_merge changes when follow-up pipeline is not required", async () => {
+  await withAttempt(async ({ attemptKey, event, statePath }) => {
+    updateAttempt(statePath, attemptKey, {
+      repoStagedAt: event.receivedAt,
+      repoStagedFiles: 1,
+      repoStagedBytes: 32,
+    });
+    const sandbox = new FakePublishSandbox(attemptKey, event);
+    let publishCalls = 0;
+    let mergeCalls = 0;
+    const restoreProvider = registerProviderClient("github", makeProvider({
+      async publishFix(input) {
+        publishCalls += 1;
+        assert.equal(input.policy.mode, "auto_merge");
+        return {
+          provider: "github",
+          mode: "auto_merge",
+          branch: "hootline/fix/main/abc123def456",
+          commitSha: "fix1234567890",
+          changeNumber: 42,
+          changeUrl: "https://github.com/owner/repo/pull/42",
+          message: "published",
+        };
+      },
+      async mergeChange(input) {
+        mergeCalls += 1;
+        assert.equal(input.expectedCommitSha, "fix1234567890");
+        return {
+          provider: "github",
+          mode: "auto_merge",
+          branch: input.branch,
+          commitSha: "merge1234567890",
+          changeNumber: input.changeNumber,
+          merged: true,
+          message: "merged",
+        };
+      },
+    }));
+    try {
+      const output = await publishFixTool.execute(
+        { summary: "Verified fix." },
+        makeContext(attemptKey, sandbox),
+      ) as { published: boolean; result?: PublishResult };
+
+      assert.equal(output.published, true);
+      assert.equal(output.result?.merged, true);
+      assert.equal(publishCalls, 1);
+      assert.equal(mergeCalls, 1);
+      const attempt = loadState(statePath).attempts[attemptKey];
+      assert.equal(attempt?.lastTerminalAction, "merged");
+      assert.equal(attempt?.pendingAutoMerge, false);
+      assert.equal(attempt?.lastPublishResult?.commitSha, "merge1234567890");
+    } finally {
+      restoreProvider();
+    }
+  }, { mode: "auto_merge", autoMerge: { deleteSourceBranch: false, requireSuccessfulPipeline: false } });
+});
+
+test("publish_fix records published change when immediate auto_merge fails after publish", async () => {
+  await withAttempt(async ({ attemptKey, event, statePath }) => {
+    updateAttempt(statePath, attemptKey, {
+      repoStagedAt: event.receivedAt,
+      repoStagedFiles: 1,
+      repoStagedBytes: 32,
+    });
+    const sandbox = new FakePublishSandbox(attemptKey, event);
+    let mergeCalls = 0;
+    const restoreProvider = registerProviderClient("github", makeProvider({
+      async publishFix(input) {
+        assert.equal(input.policy.mode, "auto_merge");
+        return {
+          provider: "github",
+          mode: "auto_merge",
+          branch: "hootline/fix/main/abc123def456",
+          commitSha: "fix1234567890",
+          changeNumber: 42,
+          changeUrl: "https://github.com/owner/repo/pull/42",
+          message: "published",
+        };
+      },
+      async mergeChange(input) {
+        mergeCalls += 1;
+        assert.equal(input.expectedCommitSha, "fix1234567890");
+        throw new Error("temporary merge outage");
+      },
+    }));
+    try {
+      const output = await publishFixTool.execute(
+        { summary: "Verified fix." },
+        makeContext(attemptKey, sandbox),
+      ) as { published: boolean; reason?: string; result?: PublishResult };
+
+      assert.equal(output.published, true);
+      assert.equal(output.reason, "merge_failed_after_publish");
+      assert.equal(output.result?.commitSha, "fix1234567890");
+      assert.equal(mergeCalls, 1);
+      const attempt = loadState(statePath).attempts[attemptKey];
+      assert.equal(attempt?.lastTerminalAction, "published");
+      assert.equal(attempt?.lastSessionStatus, "completed");
+      assert.equal(attempt?.pendingAutoMerge, false);
+      assert.equal(attempt?.lastPublishResult?.commitSha, "fix1234567890");
+    } finally {
+      restoreProvider();
+    }
+  }, { mode: "auto_merge", autoMerge: { deleteSourceBranch: false, requireSuccessfulPipeline: false } });
+});
+
 async function withAttempt(
   run: (fixture: { attemptKey: string; event: NormalizedPipelineEvent; statePath: string }) => Promise<void>,
   policyOverrides: Partial<RepoPolicy> = {},
@@ -87,13 +195,56 @@ async function withAttempt(
   }
 }
 
-function makeContext(attemptKey: string): Parameters<typeof mergeChangeTool.execute>[1] {
+function makeContext(
+  attemptKey: string,
+  sandbox?: unknown,
+): Parameters<typeof mergeChangeTool.execute>[1] {
   return {
     session: { auth: { current: { attributes: { attemptKey } } } },
-    getSandbox: () => {
-      throw new Error("sandbox not used");
+    getSandbox: async () => {
+      if (sandbox === undefined) throw new Error("sandbox not used");
+      return sandbox;
     },
   } as unknown as Parameters<typeof mergeChangeTool.execute>[1];
+}
+
+class FakePublishSandbox {
+  readonly id = "sandbox-1";
+  constructor(
+    private readonly attemptKey: string,
+    private readonly event: NormalizedPipelineEvent,
+  ) {}
+
+  async readTextFile(input: { path: string }) {
+    if (input.path !== ".hootline/staged-repository.json") return null;
+    return `${JSON.stringify({
+      attemptKey: this.attemptKey,
+      provider: this.event.provider,
+      repoSlug: this.event.repoSlug,
+      sha: this.event.sha,
+      pipelineId: this.event.pipelineId,
+      sandboxId: this.id,
+    })}\n`;
+  }
+
+  async readBinaryFile(input: { path: string }) {
+    if (input.path === "repo/src/value.js") return Buffer.from("export const value = 2;\n");
+    return null;
+  }
+
+  async run(input: { command: string }) {
+    if (input.command === "git -C repo rev-parse --is-inside-work-tree >/dev/null 2>&1") {
+      return { exitCode: 0, stdout: "true\n", stderr: "" };
+    }
+    if (input.command === "git -C repo status --porcelain=v1 -z --untracked-files=all") {
+      return { exitCode: 0, stdout: " M src/value.js\0", stderr: "" };
+    }
+    return { exitCode: 0, stdout: "ok\n", stderr: "" };
+  }
+
+  async setNetworkPolicy() {
+    return undefined;
+  }
 }
 
 function makeProvider(overrides: Partial<ProviderClient> = {}): ProviderClient {

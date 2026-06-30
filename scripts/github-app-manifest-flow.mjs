@@ -23,7 +23,7 @@ const port = readInteger(options.port, DEFAULT_PORT);
 const host = options.host ?? "127.0.0.1";
 const appName = options.name ?? DEFAULT_APP_NAME;
 const owner = options.owner;
-const ownerType = options.ownerType ?? "user";
+const ownerType = readOwnerType(options.ownerType);
 const outputDir = resolve(options.outputDir ?? "var/github-app");
 const callbackUrl = `http://${host}:${port}/callback`;
 const state = crypto.randomUUID();
@@ -76,7 +76,7 @@ server.listen(port, host, () => {
 function buildManifest({ appName, callbackUrl, webhookUrl, repoUrl }) {
   return {
     name: appName,
-    url: repoUrl ?? "https://github.com/owner/repo",
+    url: repoUrl ?? "https://github.com/openhoo/hootline",
     hook_attributes: {
       url: webhookUrl,
       active: true,
@@ -232,6 +232,14 @@ function readInteger(value, fallback) {
   const parsed = Number.parseInt(value, 10);
   if (!Number.isInteger(parsed) || parsed <= 0) throw new Error(`Invalid integer: ${value}`);
   return parsed;
+}
+
+function readOwnerType(value) {
+  const ownerType = value ?? "user";
+  if (ownerType !== "user" && ownerType !== "org") {
+    throw new Error(`Invalid --owner-type: ${ownerType}. Expected user or org.`);
+  }
+  return ownerType;
 }
 
 function requiredOwner(owner) {

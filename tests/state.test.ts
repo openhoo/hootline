@@ -116,6 +116,55 @@ test("counts attempts for a sha across pipeline ids", () => {
   }
 });
 
+test("repeat attempts refresh policy and clear prior repair state", () => {
+  const tempRoot = mkdtempSync(join(tmpdir(), "hootline-state-"));
+  const statePath = join(tempRoot, "state.json");
+  try {
+    const event = makeEvent();
+    const key = eventAttemptKey(event);
+    recordAttempt(statePath, event, makePolicy({ allowedFileGlobs: ["src/**"] }));
+    updateAttempt(statePath, key, {
+      lastSessionId: "session-old",
+      lastSessionStatus: "abandoned",
+      lastTerminalAction: "published",
+      repoStagedAt: event.receivedAt,
+      lastVerification: { ok: true },
+      lastPublishResult: {
+        provider: "github",
+        mode: "pr_mr",
+        branch: "hootline/fix/main/abc123def456",
+        commitSha: "old-fix",
+        changeNumber: 42,
+        message: "Published old PR.",
+      },
+      publishedBranch: "hootline/fix/main/abc123def456",
+      changeNumber: 42,
+      pendingAutoMerge: true,
+    });
+
+    const nextPolicy = makePolicy({
+      allowedFileGlobs: ["src/**", "package.json"],
+      verificationCommands: ["npm test", "npm run lint"],
+    });
+    const repeated = recordAttempt(statePath, { ...event, deliveryId: "delivery-2" }, nextPolicy);
+
+    assert.equal(repeated.attempts, 2);
+    assert.deepEqual(repeated.policy.allowedFileGlobs, ["src/**", "package.json"]);
+    assert.deepEqual(repeated.policy.verificationCommands, ["npm test", "npm run lint"]);
+    assert.equal(repeated.lastSessionId, undefined);
+    assert.equal(repeated.lastSessionStatus, undefined);
+    assert.equal(repeated.lastTerminalAction, undefined);
+    assert.equal(repeated.repoStagedAt, undefined);
+    assert.equal(repeated.lastVerification, undefined);
+    assert.equal(repeated.lastPublishResult, undefined);
+    assert.equal(repeated.publishedBranch, undefined);
+    assert.equal(repeated.changeNumber, undefined);
+    assert.equal(repeated.pendingAutoMerge, undefined);
+  } finally {
+    rmSync(tempRoot, { recursive: true, force: true });
+  }
+});
+
 test("finds active repair attempts for duplicate pipeline events without pinning stale empty attempts", () => {
   const tempRoot = mkdtempSync(join(tmpdir(), "hootline-state-"));
   const statePath = join(tempRoot, "state.json");

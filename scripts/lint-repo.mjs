@@ -30,8 +30,6 @@ const EXACT_TEXT_FILES = new Set([
   "Dockerfile",
 ]);
 
-const SKIP_FILES = new Set(["scripts/lint-repo.mjs"]);
-
 const checks = [
   {
     pattern: /@ts-ignore/g,
@@ -44,6 +42,7 @@ for (const file of walk(".")) {
   const text = readFileSync(file, "utf8");
   for (const check of checks) {
     for (const match of text.matchAll(check.pattern)) {
+      if (isAllowedSelfReference(file, text, match.index ?? 0)) continue;
       failures.push(`${file}:${lineNumber(text, match.index ?? 0)} ${check.message}`);
     }
   }
@@ -73,12 +72,24 @@ function* walk(directory) {
 
 function isTextFile(path) {
   const normalized = path.replace(/^\.\//, "");
-  if (SKIP_FILES.has(normalized)) return false;
   if (EXACT_TEXT_FILES.has(normalized)) return true;
   const dotIndex = path.lastIndexOf(".");
   return dotIndex !== -1 && TEXT_EXTENSIONS.has(path.slice(dotIndex));
 }
 
+function isAllowedSelfReference(file, text, index) {
+  const normalized = file.replace(/^\.\//, "");
+  if (normalized !== "scripts/lint-repo.mjs") return false;
+  const line = lineText(text, index);
+  return line.includes("pattern:") || line.includes("message:");
+}
+
 function lineNumber(text, index) {
   return text.slice(0, index).split("\n").length;
+}
+
+function lineText(text, index) {
+  const start = text.lastIndexOf("\n", index) + 1;
+  const end = text.indexOf("\n", index);
+  return text.slice(start, end === -1 ? text.length : end);
 }
