@@ -1,5 +1,11 @@
 # hootline Changelog
 
+## 0.5.0 (2026-06-30)
+
+### Features
+
+- improve benchmark fixture realism (14a9938)
+
 ## 0.4.0 (2026-06-30)
 
 ### Features
