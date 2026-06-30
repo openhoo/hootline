@@ -55,6 +55,7 @@ export interface SandboxTextReplacementResult {
   replacements: number;
   beforeBytes: number;
   afterBytes: number;
+  matchStrategy: "exact" | "indentation_insensitive";
 }
 
 export function validateChangesAgainstPolicy(
@@ -137,10 +138,20 @@ export async function replaceSandboxText(
   }
 
   const matches = countOccurrences(current, edit.expected);
-  if (matches !== 1) {
+  let next: string;
+  let matchStrategy: SandboxTextReplacementResult["matchStrategy"] = "exact";
+  if (matches === 1) {
+    next = current.replace(edit.expected, edit.replacement);
+  } else if (matches === 0) {
+    const fallback = replaceIndentationInsensitiveBlock(current, edit.expected, edit.replacement);
+    if (fallback === undefined) {
+      throw new Error(`expected text must occur exactly once in ${path}; found ${matches}.`);
+    }
+    next = fallback.content;
+    matchStrategy = "indentation_insensitive";
+  } else {
     throw new Error(`expected text must occur exactly once in ${path}; found ${matches}.`);
   }
-  const next = current.replace(edit.expected, edit.replacement);
   const beforeBytes = Buffer.byteLength(current, "utf8");
   const afterBytes = Buffer.byteLength(next, "utf8");
   if (afterBytes > policy.maxSnapshotBytes) {
@@ -148,7 +159,7 @@ export async function replaceSandboxText(
   }
 
   await sandbox.writeTextFile({ path: `repo/${path}`, content: next });
-  return { path, replacements: 1, beforeBytes, afterBytes };
+  return { path, replacements: 1, beforeBytes, afterBytes, matchStrategy };
 }
 
 export async function runVerificationCommands(
@@ -376,6 +387,83 @@ function countOccurrences(value: string, needle: string): number {
     index = value.indexOf(needle, index + needle.length);
   }
   return count;
+}
+
+function replaceIndentationInsensitiveBlock(
+  current: string,
+  expected: string,
+  replacement: string,
+): { content: string } | undefined {
+  const expectedLines = splitLogicalLines(expected);
+  const replacementLines = splitLogicalLines(replacement);
+  if (
+    expectedLines.length === 0 ||
+    replacementLines.length !== expectedLines.length ||
+    expectedLines.some((line) => line.text.trim().length === 0)
+  ) {
+    return undefined;
+  }
+
+  const currentLines = splitLogicalLines(current);
+  const candidates: Array<{ start: number; end: number }> = [];
+  for (let index = 0; index <= currentLines.length - expectedLines.length; index += 1) {
+    const matches = expectedLines.every((expectedLine, offset) => {
+      const currentLine = currentLines[index + offset];
+      return currentLine !== undefined && currentLine.text.trim() === expectedLine.text.trim();
+    });
+    if (matches) candidates.push({ start: index, end: index + expectedLines.length });
+  }
+  if (candidates.length !== 1) return undefined;
+
+  const candidate = candidates[0];
+  if (candidate === undefined) return undefined;
+  const adjustedReplacement = replacementLines.map((replacementLine, offset) => {
+    const currentLine = currentLines[candidate.start + offset];
+    const expectedLine = expectedLines[offset];
+    if (currentLine === undefined || expectedLine === undefined) return replacementLine.raw;
+    return `${adjustIndentation(replacementLine.text, expectedLine.text, currentLine.text)}${currentLine.eol}`;
+  });
+
+  const before = currentLines.slice(0, candidate.start).map((line) => line.raw).join("");
+  const after = currentLines.slice(candidate.end).map((line) => line.raw).join("");
+  return { content: `${before}${adjustedReplacement.join("")}${after}` };
+}
+
+interface LogicalLine {
+  raw: string;
+  text: string;
+  eol: string;
+}
+
+function splitLogicalLines(value: string): LogicalLine[] {
+  if (value.length === 0) return [];
+  const lines: LogicalLine[] = [];
+  const pattern = /([^\r\n]*)(\r\n|\n|\r|$)/g;
+  for (;;) {
+    const match = pattern.exec(value);
+    if (match === null) break;
+    const text = match[1] ?? "";
+    const eol = match[2] ?? "";
+    if (text.length === 0 && eol.length === 0 && pattern.lastIndex >= value.length) break;
+    lines.push({ raw: `${text}${eol}`, text, eol });
+    if (eol.length === 0) break;
+  }
+  return lines;
+}
+
+function adjustIndentation(replacementLine: string, expectedLine: string, currentLine: string): string {
+  const expectedIndent = leadingWhitespace(expectedLine);
+  const replacementIndent = leadingWhitespace(replacementLine);
+  const currentIndent = leadingWhitespace(currentLine);
+  const replacementBody = replacementLine.slice(replacementIndent.length);
+  if (replacementIndent.startsWith(expectedIndent)) {
+    return `${currentIndent}${replacementIndent.slice(expectedIndent.length)}${replacementBody}`;
+  }
+  return `${currentIndent}${replacementLine.trimStart()}`;
+}
+
+function leadingWhitespace(value: string): string {
+  return value.match(/^\s*/)?.[0] ?? "";
 }
 
 function assertSafeVerificationCommand(command: string): void {

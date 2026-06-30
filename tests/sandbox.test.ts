@@ -126,6 +126,63 @@ test("normalizes documented workspace paths for repository edits", async () => {
   assert.equal(sandbox.textFiles.get("repo/src/app.ts"), "export const value = 2;\n");
 });
 
+test("replaces a uniquely matching line when only indentation differs", async () => {
+  const sandbox = new FakeSandbox();
+  sandbox.textFiles.set(
+    "repo/src/app.ts",
+    [
+      "export function classify(lines) {",
+      "  const allDigital = lines.some((line) => line.weightOunces === 0);",
+      "  return allDigital;",
+      "}",
+      "",
+    ].join("\n"),
+  );
+
+  const result = await replaceSandboxText(sandbox, makePolicy(), {
+    path: "src/app.ts",
+    expected: "    const allDigital = lines.some((line) => line.weightOunces === 0);",
+    replacement: "    const allDigital = lines.every((line) => line.weightOunces === 0);",
+  });
+
+  assert.equal(result.matchStrategy, "indentation_insensitive");
+  assert.equal(
+    sandbox.textFiles.get("repo/src/app.ts"),
+    [
+      "export function classify(lines) {",
+      "  const allDigital = lines.every((line) => line.weightOunces === 0);",
+      "  return allDigital;",
+      "}",
+      "",
+    ].join("\n"),
+  );
+});
+
+test("rejects indentation-insensitive edits when the trimmed block is ambiguous", async () => {
+  const sandbox = new FakeSandbox();
+  sandbox.textFiles.set(
+    "repo/src/app.ts",
+    [
+      "export function first(lines) {",
+      "  const allDigital = lines.some((line) => line.weightOunces === 0);",
+      "}",
+      "export function second(lines) {",
+      "    const allDigital = lines.some((line) => line.weightOunces === 0);",
+      "}",
+      "",
+    ].join("\n"),
+  );
+
+  await assert.rejects(
+    replaceSandboxText(sandbox, makePolicy(), {
+      path: "src/app.ts",
+      expected: "     const allDigital = lines.some((line) => line.weightOunces === 0);",
+      replacement: "     const allDigital = lines.every((line) => line.weightOunces === 0);",
+    }),
+    /expected text must occur exactly once in src\/app\.ts; found 0/,
+  );
+});
+
 test("rejects edit paths outside policy and ambiguous replacements", async () => {
   const sandbox = new FakeSandbox();
   sandbox.textFiles.set("repo/src/app.ts", "same\nsame\n");
