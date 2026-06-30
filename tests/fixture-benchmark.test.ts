@@ -16,8 +16,9 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 const scenarioModule = await import(new URL("../scripts/fixture-scenarios.mjs", import.meta.url).href);
-const benchmarkModule = await import(new URL("../scripts/fixture-benchmark.mjs", import.meta.url).href);
-const simulatedBenchmarkModule = await import(new URL("../scripts/simulated-benchmark.mjs", import.meta.url).href);
+const benchmarkModule = await import(new URL("../scripts/benchmarks/common.mjs", import.meta.url).href);
+const fixtureBenchmarkModule = await import(new URL("../scripts/fixture-benchmark.mjs", import.meta.url).href);
+const simulatedAppModule = await import(new URL("../scripts/benchmarks/simulated-app.mjs", import.meta.url).href);
 
 const {
   SCENARIOS,
@@ -32,17 +33,19 @@ const {
 const {
   buildBenchmarkRow,
   classifyBenchmarkStatus,
-  extractGitHubDeliveryDatabaseId,
   findAttemptForSha,
   summarizeImprovementSignals,
   summarizeRows,
-  summarizeStatusCheckRollup,
 } = benchmarkModule;
+const {
+  extractGitHubDeliveryDatabaseId,
+  summarizeStatusCheckRollup,
+} = fixtureBenchmarkModule;
 const {
   loadBenchmarkEnvFiles,
   parseDotEnv,
   prepareBenchmarkAppWorkspace,
-} = simulatedBenchmarkModule;
+} = simulatedAppModule;
 
 test("fixture scenarios replace exactly one passing source region", () => {
   const tempRoot = mkdtempSync(join(tmpdir(), "hootline-fixture-scenarios-"));

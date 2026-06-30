@@ -33,6 +33,14 @@ works inside Eve's sandbox after calling `stage_repository_snapshot`, edits
   - Secrets and secret-looking text are redacted from logs and tool-visible
     command output.
 
+## Project Layout
+
+See [docs/architecture.md](docs/architecture.md) for the module boundaries and
+benchmark harness structure. In short: `agent/` is the Eve-authored runtime
+surface, provider side effects stay in trusted runtime code, `agent/tools/` stay
+thin and model-facing, and reusable benchmark logic lives under
+`scripts/benchmarks/`.
+
 ## Local Setup
 
 Install dependencies:
@@ -390,7 +398,9 @@ the server yourself with matching env values.
 
 Rows preserve the live benchmark fields and add simulated repair file/check
 metadata, including actual changed files, expected-vs-actual repair file match,
-and simulated branch check conclusion.
+and simulated branch check conclusion. Shared row/status/summary helpers live in
+`scripts/benchmarks/common.mjs`; the simulated runner should not import the live
+fixture benchmark CLI for common behavior.
 
 ## Fixture Benchmark
 
