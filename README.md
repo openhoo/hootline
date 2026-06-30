@@ -232,10 +232,8 @@ subscribes to `workflow_run` and `check_suite` events.
 
 The `wakemeup0/hootline-pipeline-fixture` repo is reset through a destructive,
 repeatable workflow so every end-to-end test starts from the same repairable
-state. The default baseline is commit
-`ac0f5f08fbe287e4d012c90bf2b64cd2df5295c6`, also pushed as tag
-`hootline-fixture-baseline-v2`; it contains a passing commerce pricing app plus
-`.hootline.yaml`.
+state. The default baseline is tag `hootline-fixture-baseline-v3`; it contains a
+passing commerce pricing app plus `.hootline.yaml`.
 
 Preview the reset plan:
 
@@ -243,10 +241,16 @@ Preview the reset plan:
 npm run fixture:reset -- --dry-run
 ```
 
-Run the reset:
+Run the default scenario reset:
 
 ```sh
 npm run fixture:reset -- --yes
+```
+
+Run a specific scenario:
+
+```sh
+npm run fixture:reset -- --scenario promotion-code-normalization --yes
 ```
 
 The workflow:
@@ -255,13 +259,68 @@ The workflow:
 - deletes remote `hootline/fix/*` branches;
 - force-pushes fixture `main` back to the baseline commit;
 - verifies the baseline with `npm run verify`;
-- changes `src/shipping.js` to the known free-shipping eligibility bug;
-- verifies the bug fails the fixture tests;
+- injects one private scenario mutation from `scripts/fixture-scenarios.mjs`;
+- verifies the scenario fails the fixture tests;
 - commits and pushes the fresh failing `main` commit.
 
 Defaults can be overridden with `HOOTLINE_FIXTURE_REPO`,
 `HOOTLINE_FIXTURE_PATH`, `HOOTLINE_FIXTURE_BASELINE_REF`,
-`HOOTLINE_FIXTURE_MAIN_BRANCH`, and `HOOTLINE_FIXTURE_FIX_BRANCH_PREFIX`.
+`HOOTLINE_FIXTURE_MAIN_BRANCH`, `HOOTLINE_FIXTURE_FIX_BRANCH_PREFIX`, and
+`HOOTLINE_FIXTURE_SCENARIO`.
+
+## Fixture Benchmark
+
+`fixture:benchmark` runs the repairable fixture scenarios sequentially against a
+live Hootline server and writes local artifacts under `var/fixture-benchmarks/`.
+Start Hootline with the same state path you pass to the benchmark:
+
+```sh
+set -a
+source .env.local
+source var/github-app/<app-slug>.env
+export HOOTLINE_STATE_PATH=var/fixture-benchmark-state.json
+set +a
+npm run dev -- --host 127.0.0.1 --port 3000
+```
+
+In another shell with the same GitHub App env loaded:
+
+```sh
+npm run fixture:benchmark -- --dry-run
+npm run fixture:benchmark -- --scenarios all --samples 1 --state-path var/fixture-benchmark-state.json --yes
+```
+
+The benchmark waits for the pushed fixture workflow to fail, waits for Hootline
+to publish or terminate the repair attempt, waits for fixer PR checks when a PR
+is opened, and records attempt count, tool sequence, failed tools, continuation
+count, token usage, terminal action, PR URL, and PR check result. If a repair
+attempt terminates without publishing and policy still allows another attempt,
+the runner asks GitHub to redeliver the App webhook once more.
+
+### Latest Live Benchmark
+
+The latest live GitHub fixture benchmark ran on June 30, 2026 against
+`wakemeup0/hootline-pipeline-fixture` using baseline
+`hootline-fixture-baseline-v3`.
+
+- Result: `4/4` repairable scenarios reached `published_green`.
+- Average attempts: `1.00`.
+- Average continuations: `0.00`.
+- Artifacts: `var/fixture-benchmarks/2026-06-30T08-11-34-290Z`.
+- State file: `var/fixture-benchmark-live-20260630T080944Z.json`.
+
+| Scenario | PR | Attempts | Continuations |
+| --- | ---: | ---: | ---: |
+| `shipping-threshold-basis` | #5 | 1 | 0 |
+| `promotion-code-normalization` | #6 | 1 | 0 |
+| `mixed-cart-shipping` | #7 | 1 | 0 |
+| `percentage-rounding` | #8 | 1 | 0 |
+
+The benchmark cleanup closed PRs #5-#7 while moving between scenarios. PR #8 was
+left open and green. The fixture repo `main` was left at the final intentional
+percentage-rounding failure (`1d58570`), so run `fixture:reset` before starting a
+fresh benchmark. The local dev server and Cloudflare tunnel were stopped after
+the run; update the GitHub App webhook URL before the next live run.
 
 ### Cloudflare Quick Tunnel
 
@@ -390,6 +449,7 @@ npm run typecheck
 npm test
 npm run check:model-matrix
 npm run fixture:reset -- --dry-run
+npm run fixture:benchmark -- --dry-run
 npm run session:inspect -- <session-id>
 npm run github-app:setup -- --help
 ```

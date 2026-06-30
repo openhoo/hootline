@@ -383,6 +383,15 @@ function summarizeAttempt(attempt, statePath) {
     sha: attempt.sha,
     pipelineId: attempt.pipelineId,
     lastSessionId: attempt.lastSessionId,
+    lastSessionStatus: attempt.lastSessionStatus,
+    lastSessionFailureKind: attempt.lastSessionFailureKind,
+    lastTerminalAction: attempt.lastTerminalAction,
+    lastToolSequence: attempt.lastToolSequence,
+    lastFailedTools: attempt.lastFailedTools,
+    continuationsUsed: attempt.continuationsUsed,
+    lastInputTokens: attempt.lastInputTokens,
+    lastOutputTokens: attempt.lastOutputTokens,
+    lastEventsSeen: attempt.lastEventsSeen,
     repoStagedAt: attempt.repoStagedAt,
     hasLastVerification: attempt.lastVerification !== undefined,
     hasLastPublishResult: attempt.lastPublishResult !== undefined,
@@ -440,6 +449,32 @@ function printReport(report) {
       console.log(`- key: ${report.attempt.key}`);
       console.log(`- repo: ${report.attempt.repoSlug}@${report.attempt.sha}`);
       console.log(`- pipeline: ${report.attempt.pipelineId}`);
+      console.log(`- session status: ${report.attempt.lastSessionStatus ?? "unknown"}`);
+      if (report.attempt.lastSessionFailureKind !== undefined) {
+        console.log(`- failure kind: ${report.attempt.lastSessionFailureKind}`);
+      }
+      if (report.attempt.lastTerminalAction !== undefined) {
+        console.log(`- terminal action: ${report.attempt.lastTerminalAction}`);
+      }
+      if (Array.isArray(report.attempt.lastToolSequence)) {
+        console.log(`- tools: ${report.attempt.lastToolSequence.join(" -> ") || "none"}`);
+      }
+      if (Array.isArray(report.attempt.lastFailedTools) && report.attempt.lastFailedTools.length > 0) {
+        console.log(`- failed tools: ${report.attempt.lastFailedTools.join(", ")}`);
+      }
+      if (report.attempt.continuationsUsed !== undefined) {
+        console.log(`- continuations: ${report.attempt.continuationsUsed}`);
+      }
+      if (report.attempt.lastInputTokens !== undefined || report.attempt.lastOutputTokens !== undefined) {
+        console.log(
+          `- tokens: input=${report.attempt.lastInputTokens ?? "?"} output=${
+            report.attempt.lastOutputTokens ?? "?"
+          }`,
+        );
+      }
+      if (report.attempt.lastEventsSeen !== undefined) {
+        console.log(`- stream events seen: ${report.attempt.lastEventsSeen}`);
+      }
       console.log(`- staged: ${report.attempt.repoStagedAt ?? "no"}`);
       console.log(`- verification recorded: ${report.attempt.hasLastVerification ? "yes" : "no"}`);
       console.log(`- publish recorded: ${report.attempt.hasLastPublishResult ? "yes" : "no"}`);

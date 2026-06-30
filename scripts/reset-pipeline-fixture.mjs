@@ -1,12 +1,21 @@
 #!/usr/bin/env node
 import { execFileSync, spawnSync } from "node:child_process";
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync } from "node:fs";
 import { resolve } from "node:path";
+
+import {
+  DEFAULT_SCENARIO_ID,
+  applyScenarioMutation,
+  assertScenarioBaseline,
+  expectedFixtureFiles,
+  resolveScenario,
+  scenarioIds,
+} from "./fixture-scenarios.mjs";
 
 const DEFAULTS = {
   baselineRef:
     process.env.HOOTLINE_FIXTURE_BASELINE_REF ??
-    "ac0f5f08fbe287e4d012c90bf2b64cd2df5295c6",
+    "hootline-fixture-baseline-v3",
   fixturePath:
     process.env.HOOTLINE_FIXTURE_PATH ??
     "../hootline-pipeline-fixture",
@@ -19,14 +28,15 @@ const DEFAULTS = {
   repo:
     process.env.HOOTLINE_FIXTURE_REPO ??
     "wakemeup0/hootline-pipeline-fixture",
+  scenario:
+    process.env.HOOTLINE_FIXTURE_SCENARIO ??
+    DEFAULT_SCENARIO_ID,
 };
 
 const FIXTURE_VERIFY_COMMAND = ["npm", "run", "verify"];
-const SHIPPING_SOURCE_PATH = "src/shipping.js";
-const GOOD_SHIPPING_LINE = "  const shippingBasisCents = merchandiseSubtotalCents;";
-const BAD_SHIPPING_LINE = "  const shippingBasisCents = discountedSubtotalCents;";
 
 const options = parseArgs(process.argv.slice(2));
+const scenario = resolveScenario(options.scenario);
 
 if (options.help) {
   printHelp();
@@ -52,6 +62,7 @@ async function main() {
   console.log(`Baseline ref: ${options.baselineRef}`);
   console.log(`Main branch: ${options.mainBranch}`);
   console.log(`Fix branch prefix: ${options.fixBranchPrefix}`);
+  console.log(`Scenario: ${scenario.id} (${scenario.title})`);
   if (options.dryRun) console.log("Mode: dry run");
 
   runGit(["fetch", "origin", "--prune", "--tags"], { write: false });
@@ -87,8 +98,8 @@ async function main() {
 
   injectFailure();
   runFixtureTests({ expectSuccess: false });
-  runGit(["add", SHIPPING_SOURCE_PATH], { write: true });
-  runGit(["commit", "-m", "Reproduce failing shipping pipeline"], { write: true });
+  runGit(["add", scenario.sourcePath], { write: true });
+  runGit(["commit", "-m", scenario.commitMessage], { write: true });
   const failingSha = options.dryRun ? "<dry-run>" : readGit(["rev-parse", "HEAD"]).trim();
   runGit(["push", "origin", `${options.mainBranch}:${options.mainBranch}`], { write: true });
 
@@ -116,25 +127,13 @@ function assertBaselineIsRepairable() {
         "Use a policy-backed baseline ref.",
     );
   }
-  const expectedFiles = [
-    "src/catalog.js",
-    "src/orders.js",
-    "src/promotions.js",
-    "src/receipt.js",
-    SHIPPING_SOURCE_PATH,
-    "src/tax.js",
-    "test/order-pricing.test.js",
-  ];
-  for (const file of expectedFiles) {
+  for (const file of expectedFixtureFiles()) {
     if (!existsSync(`${fixturePath}/${file}`)) {
       fail(`Baseline ${options.baselineRef} is missing expected fixture file: ${file}`);
     }
   }
 
-  const source = readFileSync(`${fixturePath}/${SHIPPING_SOURCE_PATH}`, "utf8");
-  if (!source.includes(GOOD_SHIPPING_LINE)) {
-    fail(`Baseline ${SHIPPING_SOURCE_PATH} does not contain the expected passing shipping line.`);
-  }
+  assertScenarioBaseline(fixturePath, scenario);
 }
 
 function closePullRequests(pullRequests) {
@@ -162,15 +161,10 @@ function deleteRemoteBranches(branches) {
 
 function injectFailure() {
   if (options.dryRun) {
-    console.log("would replace passing shipping policy line with intentional failure");
+    console.log(`would inject fixture scenario ${scenario.id} in ${scenario.sourcePath}`);
     return;
   }
-  const sourcePath = `${fixturePath}/${SHIPPING_SOURCE_PATH}`;
-  const source = readFileSync(sourcePath, "utf8");
-  if (!source.includes(GOOD_SHIPPING_LINE)) {
-    fail("Cannot inject failure: expected passing shipping policy line was not found.");
-  }
-  writeFileSync(sourcePath, source.replace(GOOD_SHIPPING_LINE, BAD_SHIPPING_LINE));
+  applyScenarioMutation(fixturePath, scenario);
 }
 
 function runFixtureTests({ expectSuccess }) {
@@ -303,6 +297,9 @@ function parseArgs(argv) {
       case "--repo":
         parsed.repo = value;
         break;
+      case "--scenario":
+        parsed.scenario = value;
+        break;
       default:
         fail(`Unknown argument: ${arg}`);
     }
@@ -329,8 +326,12 @@ Options:
   --fix-branch-prefix <pfx>  Remote fixer branch prefix to delete.
   --main-branch <branch>     Fixture default branch.
   --repo <owner/name>        GitHub fixture repository.
+  --scenario <id>            Scenario to inject. Default: ${DEFAULT_SCENARIO_ID}.
   --dry-run                  Print the reset plan without writes.
   --yes, -y                  Actually close PRs, force-push main, and push the failing commit.
+
+Available scenarios:
+  ${scenarioIds().join("\n  ")}
 
 Defaults can also be set with HOOTLINE_FIXTURE_* environment variables.`);
 }

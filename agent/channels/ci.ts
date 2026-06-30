@@ -330,6 +330,11 @@ function recordSessionObservation(
     lastSessionFailure: observation.failureMessage,
     lastSessionEndedAt: observation.endedAt,
     lastToolSequence: observation.toolSequence,
+    lastFailedTools: observation.failedTools,
+    lastTerminalAction: observation.terminalAction,
+    lastInputTokens: observation.inputTokens,
+    lastOutputTokens: observation.outputTokens,
+    lastEventsSeen: observation.eventsSeen,
     continuationsUsed,
   });
 }

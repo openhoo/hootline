@@ -59,6 +59,7 @@ test("recognizes successful publish_fix as terminal completion", () => {
 
   assert.equal(observation.status, "completed");
   assert.equal(observation.terminalAction, "published");
+  assert.equal(observation.eventsSeen, 2);
   assert.equal(observation.failureKind, undefined);
   assert.equal(shouldSendRepairContinuation(observation, 0, 1), false);
 });

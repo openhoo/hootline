@@ -58,6 +58,11 @@ export type AttemptPatch = Partial<
     | "lastSessionFailure"
     | "lastSessionEndedAt"
     | "lastToolSequence"
+    | "lastFailedTools"
+    | "lastTerminalAction"
+    | "lastInputTokens"
+    | "lastOutputTokens"
+    | "lastEventsSeen"
     | "continuationsUsed"
     | "repoStagedAt"
     | "repoStagedFiles"
@@ -174,6 +179,11 @@ const attemptRecordSchema = z
     lastSessionFailure: z.string().optional(),
     lastSessionEndedAt: z.string().optional(),
     lastToolSequence: z.array(z.string()).optional(),
+    lastFailedTools: z.array(z.string()).optional(),
+    lastTerminalAction: z.string().optional(),
+    lastInputTokens: z.number().int().nonnegative().optional(),
+    lastOutputTokens: z.number().int().nonnegative().optional(),
+    lastEventsSeen: z.number().int().nonnegative().optional(),
     continuationsUsed: z.number().int().nonnegative().optional(),
     repoStagedAt: z.string().optional(),
     repoStagedFiles: z.number().int().nonnegative().optional(),

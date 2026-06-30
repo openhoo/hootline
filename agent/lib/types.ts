@@ -136,6 +136,11 @@ export interface AttemptRecord {
   lastSessionFailure?: string | undefined;
   lastSessionEndedAt?: string | undefined;
   lastToolSequence?: string[] | undefined;
+  lastFailedTools?: string[] | undefined;
+  lastTerminalAction?: string | undefined;
+  lastInputTokens?: number | undefined;
+  lastOutputTokens?: number | undefined;
+  lastEventsSeen?: number | undefined;
   continuationsUsed?: number | undefined;
   repoStagedAt?: string | undefined;
   repoStagedFiles?: number | undefined;

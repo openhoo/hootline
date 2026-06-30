@@ -40,6 +40,18 @@ test("records attempts, dedupes deliveries, and finds pending auto-merge changes
     assert.equal(first.key, key);
     assert.equal(second.attempts, 2);
     assert.equal(getAttempt(statePath, key)?.event.deliveryId, "delivery-2");
+    updateAttempt(statePath, key, {
+      lastFailedTools: ["edit_repo_file"],
+      lastTerminalAction: "published",
+      lastInputTokens: 123,
+      lastOutputTokens: 456,
+      lastEventsSeen: 12,
+    });
+    assert.deepEqual(getAttempt(statePath, key)?.lastFailedTools, ["edit_repo_file"]);
+    assert.equal(getAttempt(statePath, key)?.lastTerminalAction, "published");
+    assert.equal(getAttempt(statePath, key)?.lastInputTokens, 123);
+    assert.equal(getAttempt(statePath, key)?.lastOutputTokens, 456);
+    assert.equal(getAttempt(statePath, key)?.lastEventsSeen, 12);
 
     assert.throws(() => assertSnapshotStaged(second), /stage_repository_snapshot/);
     updateAttempt(statePath, key, {

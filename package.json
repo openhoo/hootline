@@ -9,6 +9,7 @@
     "build": "eve build",
     "start": "eve start",
     "check:model-matrix": "node scripts/check-model-matrix.mjs",
+    "fixture:benchmark": "node scripts/fixture-benchmark.mjs",
     "fixture:reset": "node scripts/reset-pipeline-fixture.mjs",
     "github-app:check-installation": "node scripts/github-app-check-installation.mjs",
     "github-app:setup": "node scripts/github-app-manifest-flow.mjs",
