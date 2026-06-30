@@ -1,5 +1,11 @@
 # hootline Changelog
 
+## 0.2.0 (2026-06-30)
+
+### Features
+
+- expand fixture benchmark scenarios (f58977d)
+
 ## 0.1.1 (2026-06-30)
 
 ### Other Changes
@@ -19,5 +25,3 @@
 ### Bug Fixes
 
 - harden CI repair agent guardrails (429f0ba)
-
-
