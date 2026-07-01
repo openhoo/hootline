@@ -9,7 +9,7 @@ const cases = [
     env: {
       ANTHROPIC_API_KEY: "test-anthropic-key",
       HOOTLINE_MODEL: "claude-sonnet-4-6",
-      HOOTLINE_MODEL_CONTEXT_WINDOW_TOKENS: "1000000",
+      HOOTLINE_MODEL_CONTEXT_WINDOW_TOKENS: "32000",
       HOOTLINE_MODEL_PROVIDER: "anthropic",
     },
   },
@@ -19,7 +19,7 @@ const cases = [
     env: {
       OPENAI_API_KEY: "test-openai-key",
       HOOTLINE_MODEL: "gpt-5.1",
-      HOOTLINE_MODEL_CONTEXT_WINDOW_TOKENS: "400000",
+      HOOTLINE_MODEL_CONTEXT_WINDOW_TOKENS: "24000",
       HOOTLINE_MODEL_PROVIDER: "openai",
     },
   },
@@ -29,7 +29,7 @@ const cases = [
     env: {
       HOOTLINE_MODEL: "local-coder",
       HOOTLINE_MODEL_BASE_URL: "http://127.0.0.1:11434/v1",
-      HOOTLINE_MODEL_CONTEXT_WINDOW_TOKENS: "131072",
+      HOOTLINE_MODEL_CONTEXT_WINDOW_TOKENS: "32000",
       HOOTLINE_MODEL_PROVIDER: "openai-compatible",
     },
   },
@@ -39,7 +39,7 @@ const cases = [
     env: {
       AI_GATEWAY_API_KEY: "test-gateway-key",
       HOOTLINE_MODEL: "anthropic/claude-sonnet-4.6",
-      HOOTLINE_MODEL_CONTEXT_WINDOW_TOKENS: "1000000",
+      HOOTLINE_MODEL_CONTEXT_WINDOW_TOKENS: "32000",
       HOOTLINE_MODEL_PROVIDER: "gateway",
     },
   },
@@ -74,7 +74,7 @@ execFileSync("npm", ["run", "info"], {
     ...process.env,
     ANTHROPIC_API_KEY: "test-anthropic-key",
     HOOTLINE_MODEL: "claude-sonnet-4-6",
-    HOOTLINE_MODEL_CONTEXT_WINDOW_TOKENS: "1000000",
+    HOOTLINE_MODEL_CONTEXT_WINDOW_TOKENS: "32000",
     HOOTLINE_MODEL_PROVIDER: "anthropic",
   },
   stdio: "ignore",

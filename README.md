@@ -88,7 +88,7 @@ docker build \
   --build-arg HOOTLINE_MODEL_PROVIDER=openai-compatible \
   --build-arg HOOTLINE_MODEL=gemma-4-31b \
   --build-arg HOOTLINE_MODEL_BASE_URL=https://api.cerebras.ai/v1 \
-  --build-arg HOOTLINE_MODEL_CONTEXT_WINDOW_TOKENS=65536 \
+  --build-arg HOOTLINE_MODEL_CONTEXT_WINDOW_TOKENS=32000 \
   --build-arg HOOTLINE_MODEL_PROVIDER_NAME=cerebras \
   -t ghcr.io/openhoo/hootline:local .
 ```
@@ -167,7 +167,7 @@ Model settings:
   `claude-sonnet-4-6`, `gpt-5.1`, `gpt-oss-120b`, or
   `anthropic/claude-sonnet-4.6`.
 - `HOOTLINE_MODEL_CONTEXT_WINDOW_TOKENS`: optional for direct providers,
-  required for `openai-compatible`. Must be between `4096` and `2000000`.
+  required for `openai-compatible`. Must be between `4096` and `32000`.
 - `HOOTLINE_MODEL_API_KEY`: provider-specific override credential.
 - `HOOTLINE_MODEL_BASE_URL`: optional for direct Anthropic/OpenAI,
   required for `openai-compatible`.
@@ -216,7 +216,7 @@ Local or hosted OpenAI-compatible endpoint:
 HOOTLINE_MODEL_PROVIDER=openai-compatible
 HOOTLINE_MODEL=local-coder
 HOOTLINE_MODEL_BASE_URL=http://127.0.0.1:11434/v1
-HOOTLINE_MODEL_CONTEXT_WINDOW_TOKENS=131072
+HOOTLINE_MODEL_CONTEXT_WINDOW_TOKENS=32000
 HOOTLINE_MODEL_API_KEY=...
 ```
 

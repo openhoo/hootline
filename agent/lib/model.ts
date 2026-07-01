@@ -17,7 +17,7 @@ const defaultModels: Record<PipelineFixerModelProvider, string> = {
   mock: "hootline-simulated-script",
 };
 
-const maxContextWindowTokens = 2_000_000;
+const maxContextWindowTokens = 32_000;
 const minContextWindowTokens = 4_096;
 
 export function resolvePipelineFixerModel(env: NodeJS.ProcessEnv = process.env) {

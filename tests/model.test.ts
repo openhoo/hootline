@@ -73,13 +73,20 @@ test("resolves the documented Cerebras OpenAI-compatible model id without a prov
       HOOTLINE_MODEL_PROVIDER: "openai-compatible",
       HOOTLINE_MODEL: "gemma-4-31b",
       HOOTLINE_MODEL_BASE_URL: "https://api.cerebras.ai/v1",
-      HOOTLINE_MODEL_CONTEXT_WINDOW_TOKENS: "65536",
+      HOOTLINE_MODEL_CONTEXT_WINDOW_TOKENS: "32000",
       HOOTLINE_MODEL_PROVIDER_NAME: "cerebras",
     }),
   );
 
   assert.equal(model.modelId, "gemma-4-31b");
   assert.equal(model.provider, "cerebras.chat");
+  assert.equal(
+    resolvePipelineFixerModelContextWindowTokens({
+      HOOTLINE_MODEL_PROVIDER: "openai-compatible",
+      HOOTLINE_MODEL_CONTEXT_WINDOW_TOKENS: "32000",
+    }),
+    32000,
+  );
 });
 
 test("keeps AI Gateway available only as an explicit provider mode", () => {
@@ -135,6 +142,13 @@ test("rejects unsupported and incomplete model provider configuration", () => {
     () =>
       resolvePipelineFixerModelContextWindowTokens({
         HOOTLINE_MODEL_CONTEXT_WINDOW_TOKENS: "10",
+      }),
+    /HOOTLINE_MODEL_CONTEXT_WINDOW_TOKENS must be between/,
+  );
+  assert.throws(
+    () =>
+      resolvePipelineFixerModelContextWindowTokens({
+        HOOTLINE_MODEL_CONTEXT_WINDOW_TOKENS: "32001",
       }),
     /HOOTLINE_MODEL_CONTEXT_WINDOW_TOKENS must be between/,
   );
