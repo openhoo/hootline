@@ -14,6 +14,10 @@ test("loads Hootline service config from HOOTLINE_* env with defaults", () => {
     providerErrorRetries: 2,
     providerErrorRetryBaseMs: 1000,
     providerErrorRetryMaxMs: 15000,
+    telemetryMode: "local+otlp",
+    telemetryDetail: "full",
+    telemetryPath: "var/hootline-telemetry.jsonl",
+    telemetryMaxTextChars: 12000,
   });
 
   assert.deepEqual(
@@ -23,6 +27,10 @@ test("loads Hootline service config from HOOTLINE_* env with defaults", () => {
       HOOTLINE_PROVIDER_ERROR_RETRIES: "4",
       HOOTLINE_PROVIDER_ERROR_RETRY_BASE_MS: "250",
       HOOTLINE_PROVIDER_ERROR_RETRY_MAX_MS: "5000",
+      HOOTLINE_TELEMETRY_MODE: "local",
+      HOOTLINE_TELEMETRY_DETAIL: "summary",
+      HOOTLINE_TELEMETRY_PATH: "var/custom-telemetry.jsonl",
+      HOOTLINE_TELEMETRY_MAX_TEXT_CHARS: "5000",
     }),
     {
       statePath: "var/custom-state.json",
@@ -30,6 +38,10 @@ test("loads Hootline service config from HOOTLINE_* env with defaults", () => {
       providerErrorRetries: 4,
       providerErrorRetryBaseMs: 250,
       providerErrorRetryMaxMs: 5000,
+      telemetryMode: "local",
+      telemetryDetail: "summary",
+      telemetryPath: "var/custom-telemetry.jsonl",
+      telemetryMaxTextChars: 5000,
     },
   );
   assert.throws(
@@ -39,6 +51,14 @@ test("loads Hootline service config from HOOTLINE_* env with defaults", () => {
         HOOTLINE_PROVIDER_ERROR_RETRY_MAX_MS: "500",
       }),
     /HOOTLINE_PROVIDER_ERROR_RETRY_MAX_MS/,
+  );
+  assert.throws(
+    () => loadServiceConfig({ HOOTLINE_TELEMETRY_MODE: "remote" }),
+    /HOOTLINE_TELEMETRY_MODE/,
+  );
+  assert.throws(
+    () => loadServiceConfig({ HOOTLINE_TELEMETRY_DETAIL: "verbose" }),
+    /HOOTLINE_TELEMETRY_DETAIL/,
   );
 });
 

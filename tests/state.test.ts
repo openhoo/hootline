@@ -45,13 +45,31 @@ test("records attempts, dedupes deliveries, and finds pending auto-merge changes
       lastTerminalAction: "published",
       lastInputTokens: 123,
       lastOutputTokens: 456,
+      lastCacheReadTokens: 7,
+      lastCacheWriteTokens: 8,
+      lastTotalTokens: 594,
+      lastStepUsage: [{ stepIndex: 0, inputTokens: 123, outputTokens: 456, totalTokens: 579 }],
+      lastToolCallCount: 3,
+      lastToolErrorCount: 1,
       lastEventsSeen: 12,
+      lastTelemetryRecords: 12,
+      telemetryPath: "var/hootline-telemetry.jsonl",
     });
     assert.deepEqual(getAttempt(statePath, key)?.lastFailedTools, ["edit_repo_file"]);
     assert.equal(getAttempt(statePath, key)?.lastTerminalAction, "published");
     assert.equal(getAttempt(statePath, key)?.lastInputTokens, 123);
     assert.equal(getAttempt(statePath, key)?.lastOutputTokens, 456);
+    assert.equal(getAttempt(statePath, key)?.lastCacheReadTokens, 7);
+    assert.equal(getAttempt(statePath, key)?.lastCacheWriteTokens, 8);
+    assert.equal(getAttempt(statePath, key)?.lastTotalTokens, 594);
+    assert.deepEqual(getAttempt(statePath, key)?.lastStepUsage, [
+      { stepIndex: 0, inputTokens: 123, outputTokens: 456, totalTokens: 579 },
+    ]);
+    assert.equal(getAttempt(statePath, key)?.lastToolCallCount, 3);
+    assert.equal(getAttempt(statePath, key)?.lastToolErrorCount, 1);
     assert.equal(getAttempt(statePath, key)?.lastEventsSeen, 12);
+    assert.equal(getAttempt(statePath, key)?.lastTelemetryRecords, 12);
+    assert.equal(getAttempt(statePath, key)?.telemetryPath, "var/hootline-telemetry.jsonl");
 
     assert.throws(() => assertSnapshotStaged(second), /stage_repository_snapshot/);
     updateAttempt(statePath, key, {

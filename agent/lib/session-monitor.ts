@@ -1,4 +1,9 @@
-import type { RepairSessionFailureKind, RepairSessionStatus } from "./types.ts";
+import type {
+  RepairSessionFailureKind,
+  RepairSessionStatus,
+  RepairSessionStepUsage,
+  RepairSessionTokenUsage,
+} from "./types.ts";
 import { isRecord, readNumber, readString, type UnknownRecord } from "./unknown.ts";
 
 export interface StreamSession {
@@ -21,6 +26,12 @@ export interface RepairSessionObservation {
   terminalAction?: TerminalRepairAction | undefined;
   inputTokens?: number | undefined;
   outputTokens?: number | undefined;
+  cacheReadTokens?: number | undefined;
+  cacheWriteTokens?: number | undefined;
+  totalTokens?: number | undefined;
+  stepUsage: RepairSessionStepUsage[];
+  toolCallCount: number;
+  toolErrorCount: number;
   humanInputRequested: boolean;
 }
 
@@ -35,6 +46,12 @@ export interface ObservationState {
   endedAt?: string | undefined;
   inputTokens?: number | undefined;
   outputTokens?: number | undefined;
+  cacheReadTokens?: number | undefined;
+  cacheWriteTokens?: number | undefined;
+  totalTokens?: number | undefined;
+  stepUsage: RepairSessionStepUsage[];
+  toolCallCount: number;
+  toolErrorCount: number;
   humanInputRequested: boolean;
   boundary?: "waiting" | "completed" | "failed" | undefined;
 }
@@ -90,6 +107,9 @@ export function createObservationState(): ObservationState {
     eventsSeen: 0,
     toolSequence: [],
     failedTools: [],
+    stepUsage: [],
+    toolCallCount: 0,
+    toolErrorCount: 0,
     humanInputRequested: false,
   };
 }
@@ -105,6 +125,7 @@ export function observeStreamEvent(state: ObservationState, event: unknown): voi
     for (const action of readArray(data.actions)) {
       const toolName = readToolName(action);
       if (toolName !== undefined) state.toolSequence.push(toolName);
+      state.toolCallCount += 1;
     }
     return;
   }
@@ -123,9 +144,7 @@ export function observeStreamEvent(state: ObservationState, event: unknown): voi
 
   if (type === "message.completed" || type === "step.completed") {
     state.finishReason = readString(data.finishReason) ?? state.finishReason;
-    const usage = isRecord(data.usage) ? data.usage : undefined;
-    state.inputTokens = readNumber(usage?.inputTokens) ?? state.inputTokens;
-    state.outputTokens = readNumber(usage?.outputTokens) ?? state.outputTokens;
+    if (type === "step.completed") observeStepUsage(state, data, readMetaAt(event));
     return;
   }
 
@@ -168,6 +187,12 @@ export function finalizeObservation(state: ObservationState): RepairSessionObser
     terminalAction: state.terminalAction,
     inputTokens: state.inputTokens,
     outputTokens: state.outputTokens,
+    cacheReadTokens: state.cacheReadTokens,
+    cacheWriteTokens: state.cacheWriteTokens,
+    totalTokens: state.totalTokens,
+    stepUsage: state.stepUsage,
+    toolCallCount: state.toolCallCount,
+    toolErrorCount: state.toolErrorCount,
     humanInputRequested: state.humanInputRequested,
   };
 }
@@ -197,6 +222,7 @@ function observeActionResult(state: ObservationState, data: UnknownRecord): void
   if (toolName === undefined) return;
   if (status === "failed" || status === "rejected") {
     state.failedTools.push(toolName);
+    state.toolErrorCount += 1;
     if (toolName === "edit_repo_file" && countToolFailures(state.failedTools, toolName) >= MAX_FAILED_EDIT_TOOL_RESULTS) {
       state.boundary = "failed";
       state.failureKind = "no_terminal_action";
@@ -225,6 +251,66 @@ function terminalActionFromToolResult(
     return result?.merged === true ? "merged" : "published";
   }
   return undefined;
+}
+
+function observeStepUsage(state: ObservationState, data: UnknownRecord, at: string | undefined): void {
+  const usage = isRecord(data.usage) ? data.usage : undefined;
+  const stepUsage = readStepUsage(data, usage, at);
+  if (!hasUsage(stepUsage)) return;
+  state.stepUsage.push(stepUsage);
+  state.inputTokens = addTokenCount(state.inputTokens, stepUsage.inputTokens);
+  state.outputTokens = addTokenCount(state.outputTokens, stepUsage.outputTokens);
+  state.cacheReadTokens = addTokenCount(state.cacheReadTokens, stepUsage.cacheReadTokens);
+  state.cacheWriteTokens = addTokenCount(state.cacheWriteTokens, stepUsage.cacheWriteTokens);
+  state.totalTokens = addTokenCount(state.totalTokens, stepUsage.totalTokens);
+}
+
+function readStepUsage(
+  data: UnknownRecord,
+  usage: UnknownRecord | undefined,
+  at: string | undefined,
+): RepairSessionStepUsage {
+  const inputTokens = readNumber(usage?.inputTokens);
+  const outputTokens = readNumber(usage?.outputTokens);
+  const cacheReadTokens = readNumber(usage?.cacheReadTokens);
+  const cacheWriteTokens = readNumber(usage?.cacheWriteTokens);
+  const totalTokens = readNumber(usage?.totalTokens) ?? addDefinedNumbers(inputTokens, outputTokens);
+  return {
+    stepIndex: readNumber(data.stepIndex),
+    finishReason: readString(data.finishReason),
+    at,
+    inputTokens,
+    outputTokens,
+    cacheReadTokens,
+    cacheWriteTokens,
+    totalTokens,
+  };
+}
+
+function hasUsage(usage: RepairSessionTokenUsage): boolean {
+  return (
+    usage.inputTokens !== undefined ||
+    usage.outputTokens !== undefined ||
+    usage.cacheReadTokens !== undefined ||
+    usage.cacheWriteTokens !== undefined ||
+    usage.totalTokens !== undefined
+  );
+}
+
+function addTokenCount(current: number | undefined, next: number | undefined): number | undefined {
+  if (next === undefined) return current;
+  return (current ?? 0) + next;
+}
+
+function addDefinedNumbers(...values: Array<number | undefined>): number | undefined {
+  let total = 0;
+  let seen = false;
+  for (const value of values) {
+    if (value === undefined) continue;
+    total += value;
+    seen = true;
+  }
+  return seen ? total : undefined;
 }
 
 function classifyStatus(

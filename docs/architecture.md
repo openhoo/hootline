@@ -13,6 +13,10 @@ operator tooling, benchmark infrastructure, tests, or documentation.
   retries, and releases delivery keys for provider redelivery when appropriate.
 - `agent/lib/session-monitor.ts`: Eve stream observation and continuation
   policy. This is the only layer that interprets session events.
+- `agent/instrumentation.ts` and `agent/hooks/telemetry.ts`: telemetry
+  integration. Instrumentation starts optional OTLP export and attaches repair
+  context to model spans; the hook writes redacted append-only local telemetry
+  after Eve stream events are durably recorded.
 - `agent/lib/state.ts`: durable JSON state for deliveries, attempts, rerun
   requests, publish records, and auto-merge claims. It assumes one Node process
   per state file.

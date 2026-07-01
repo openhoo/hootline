@@ -22,6 +22,7 @@ import {
   restoreAutoMergeClaim,
   updateAttempt,
 } from "./state.ts";
+import { recordTelemetry, type TelemetryIdentity } from "./telemetry.ts";
 import type { FailureContext, NormalizedPipelineEvent, RepoPolicy } from "./types.ts";
 import { isFailedConclusion, isSuccessfulConclusion } from "./webhooks.ts";
 
@@ -49,13 +50,22 @@ export async function dispatchPipelineEvent(
     pipelineId: event.pipelineId,
   });
   dlog.debug({ conclusion: event.conclusion }, "pipeline webhook received");
+  recordRepairTelemetry(config, "webhook.received", eventTelemetryIdentity(event, deliveryKey), {
+    conclusion: event.conclusion,
+    eventName: event.eventName,
+    ref: event.ref,
+  });
 
   if (isSuccessfulConclusion(event.conclusion)) {
     if (!markDeliveryProcessed(config.statePath, deliveryKey, "pending")) {
       dlog.debug("delivery ignored: duplicate delivery already processed");
+      recordRepairTelemetry(config, "webhook.ignored", eventTelemetryIdentity(event, deliveryKey), {
+        reason: "duplicate_delivery",
+      });
       return Response.json({ ok: true, ignored: true, reason: "duplicate_delivery" });
     }
     dlog.info("successful pipeline: queuing auto-merge followup");
+    recordRepairTelemetry(config, "auto_merge.followup.queued", eventTelemetryIdentity(event, deliveryKey), {});
     waitUntil(
       handleSuccessfulPipeline(event, dlog, deliveryKey, gitlabVerification).catch((error: unknown) => {
         logError(dlog, "auto-merge followup failed; pendingAutoMerge restored for retry", error);
@@ -66,16 +76,27 @@ export async function dispatchPipelineEvent(
 
   if (!isFailedConclusion(event.conclusion)) {
     dlog.debug({ conclusion: event.conclusion }, "event ignored: non-failure completion");
+    recordRepairTelemetry(config, "webhook.ignored", eventTelemetryIdentity(event, deliveryKey), {
+      reason: "non_failure_completion",
+      conclusion: event.conclusion,
+    });
     return Response.json({ ok: true, ignored: true, reason: "non_failure_completion" });
   }
 
   const policyResolution = await resolveRepoPolicy(event, dlog);
   if (policyResolution.kind === "missing") {
     dlog.debug("event ignored: repo not configured");
+    recordRepairTelemetry(config, "webhook.ignored", eventTelemetryIdentity(event, deliveryKey), {
+      reason: "repo_not_configured",
+    });
     return Response.json({ ok: true, ignored: true, reason: "repo_not_configured" });
   }
   if (policyResolution.kind === "invalid") {
     dlog.info({ error: policyResolution.error.message }, "event ignored: invalid repository config");
+    recordRepairTelemetry(config, "webhook.ignored", eventTelemetryIdentity(event, deliveryKey), {
+      reason: "invalid_repo_config",
+      error: policyResolution.error.message,
+    });
     return Response.json({ ok: true, ignored: true, reason: "invalid_repo_config" }, { status: 202 });
   }
   const policy = policyResolution.policy;
@@ -86,6 +107,10 @@ export async function dispatchPipelineEvent(
     !policy.allowGitlabSecretTokenFallback
   ) {
     dlog.warn("gitlab secret-token fallback rejected by policy (allowGitlabSecretTokenFallback=false)");
+    recordRepairTelemetry(config, "webhook.rejected", eventTelemetryIdentity(event, deliveryKey), {
+      reason: "invalid_signature",
+      gitlabVerification,
+    });
     return Response.json({ ok: false, error: "invalid_signature" }, { status: 401 });
   }
   if (event.provider === "gitlab" && gitlabVerification === "secret_token") {
@@ -94,6 +119,9 @@ export async function dispatchPipelineEvent(
 
   if (!markDeliveryProcessed(config.statePath, deliveryKey, "pending")) {
     dlog.debug("delivery ignored: duplicate delivery already processed");
+    recordRepairTelemetry(config, "webhook.ignored", eventTelemetryIdentity(event, deliveryKey), {
+      reason: "duplicate_delivery",
+    });
     return Response.json({ ok: true, ignored: true, reason: "duplicate_delivery" });
   }
 
@@ -102,6 +130,7 @@ export async function dispatchPipelineEvent(
   } catch (error) {
     const reason = error instanceof Error ? error.message : String(error);
     dlog.info({ reason }, "event rejected by repository policy");
+    recordRepairTelemetry(config, "webhook.rejected", eventTelemetryIdentity(event, deliveryKey), { reason });
     return Response.json({ ok: true, ignored: true, reason }, { status: 202 });
   }
 
@@ -111,6 +140,9 @@ export async function dispatchPipelineEvent(
       { attemptKey: claim.attempt.key },
       "repair slot not claimed: a repair is already in progress",
     );
+    recordRepairTelemetry(config, "repair.slot.not_claimed", eventTelemetryIdentity(event, deliveryKey, claim.attempt.key), {
+      reason: "repair_already_in_progress",
+    });
     return Response.json(
       { ok: true, ignored: true, reason: "repair_already_in_progress", attemptKey: claim.attempt.key },
       { status: 202 },
@@ -118,6 +150,9 @@ export async function dispatchPipelineEvent(
   }
   if (claim.decision === "max_attempts") {
     dlog.info("repair slot not claimed: max attempts per sha exceeded");
+    recordRepairTelemetry(config, "repair.slot.not_claimed", eventTelemetryIdentity(event, deliveryKey), {
+      reason: "max_attempts_exceeded",
+    });
     return Response.json({ ok: true, ignored: true, reason: "max_attempts_exceeded" }, { status: 202 });
   }
 
@@ -125,6 +160,10 @@ export async function dispatchPipelineEvent(
   const continuationToken = repairContinuationToken(event, attempt.attempts);
   const alog = dlog.child({ attemptKey: attempt.key });
   alog.info({ attempt: attempt.attempts }, "repair slot claimed: dispatching repair session");
+  recordRepairTelemetry(config, "repair.slot.claimed", eventTelemetryIdentity(event, deliveryKey, attempt.key), {
+    attempt: attempt.attempts,
+    mode: attempt.policy.mode,
+  });
   waitUntil(
     startRepairSession({
       event,
@@ -195,7 +234,15 @@ async function startRepairSession(input: {
             lastSessionFailureKind: observation.failureKind,
             lastSessionFailure: observation.failureMessage,
             providerErrorRetriesUsed,
+            telemetryPath: config.telemetryPath,
           });
+          recordRepairTelemetry(
+            config,
+            "repair.session.start_failed",
+            eventTelemetryIdentity(input.event, input.deliveryKey, input.attemptKey),
+            { providerErrorRetriesUsed, failureKind: observation.failureKind },
+            error,
+          );
           throw error;
         }
         providerErrorRetriesUsed += 1;
@@ -214,7 +261,20 @@ async function startRepairSession(input: {
         lastSessionId: session.id,
         lastSessionStatus: "running",
         providerErrorRetriesUsed,
+        telemetryPath: config.telemetryPath,
       });
+      recordRepairTelemetry(
+        config,
+        "repair.session.started",
+        {
+          ...eventTelemetryIdentity(input.event, input.deliveryKey, input.attemptKey),
+          sessionId: session.id,
+        },
+        {
+          providerErrorRetriesUsed,
+          continuationTokenKind: providerErrorRetriesUsed === 0 ? "initial" : "provider_error_retry",
+        },
+      );
       slog.info(
         { sessionId: session.id, providerErrorRetriesUsed },
         "repair session seeded; model turn started",
@@ -273,9 +333,31 @@ async function prepareProviderErrorRetry(input: {
     lastSessionFailure: formatRetryStatusMessage(input.observation, input.providerErrorRetriesUsed, delayMs),
     lastToolSequence: input.observation.toolSequence,
     lastFailedTools: input.observation.failedTools,
+    lastInputTokens: input.observation.inputTokens,
+    lastOutputTokens: input.observation.outputTokens,
+    lastCacheReadTokens: input.observation.cacheReadTokens,
+    lastCacheWriteTokens: input.observation.cacheWriteTokens,
+    lastTotalTokens: input.observation.totalTokens,
+    lastStepUsage: input.observation.stepUsage,
+    lastToolCallCount: input.observation.toolCallCount,
+    lastToolErrorCount: input.observation.toolErrorCount,
     lastEventsSeen: input.observation.eventsSeen,
+    lastTelemetryRecords: input.observation.eventsSeen,
+    telemetryPath: input.config.telemetryPath,
     providerErrorRetriesUsed: input.providerErrorRetriesUsed,
   });
+  recordRepairTelemetry(
+    input.config,
+    "repair.provider_retry.scheduled",
+    { attemptKey: input.attemptKey },
+    {
+      delayMs,
+      providerErrorRetriesUsed: input.providerErrorRetriesUsed,
+      failureKind: input.observation.failureKind,
+      failureMessage: input.observation.failureMessage,
+      eventsSeen: input.observation.eventsSeen,
+    },
+  );
   input.slog.warn(
     {
       failureKind: input.observation.failureKind,
@@ -304,7 +386,32 @@ async function monitorRepairLoop(input: {
 
   for (;;) {
     const observation = await observeRepairSession(session);
-    recordSessionObservation(input.config.statePath, input.attemptKey, observation, continuationsUsed);
+    recordSessionObservation(input.config, input.attemptKey, observation, continuationsUsed);
+    recordRepairTelemetry(
+      input.config,
+      "repair.session.boundary",
+      { attemptKey: input.attemptKey, sessionId: session.id },
+      {
+        status: observation.status,
+        finishReason: observation.finishReason,
+        failureKind: observation.failureKind,
+        failureMessage: observation.failureMessage,
+        terminalAction: observation.terminalAction,
+        toolSequence: observation.toolSequence,
+        failedTools: observation.failedTools,
+        eventsSeen: observation.eventsSeen,
+        usage: {
+          inputTokens: observation.inputTokens,
+          outputTokens: observation.outputTokens,
+          cacheReadTokens: observation.cacheReadTokens,
+          cacheWriteTokens: observation.cacheWriteTokens,
+          totalTokens: observation.totalTokens,
+        },
+        toolCallCount: observation.toolCallCount,
+        toolErrorCount: observation.toolErrorCount,
+        continuationsUsed,
+      },
+    );
     input.slog.info(
       {
         sessionId: session.id,
@@ -332,6 +439,16 @@ async function monitorRepairLoop(input: {
       { sessionId: session.id, failureKind: observation.failureKind, continuationsUsed },
       "repair session needs one bounded continuation",
     );
+    recordRepairTelemetry(
+      input.config,
+      "repair.session.continuation",
+      { attemptKey: input.attemptKey, sessionId: session.id },
+      {
+        failureKind: observation.failureKind,
+        continuationsUsed,
+        previousEventsSeen: observation.eventsSeen,
+      },
+    );
     session = await input.send(
       {
         message: buildContinuationPrompt(observation),
@@ -355,6 +472,7 @@ async function monitorRepairLoop(input: {
       ...clearSessionOutcomePatch(),
       lastSessionId: session.id,
       lastSessionStatus: "running",
+      telemetryPath: input.config.telemetryPath,
     });
   }
 }
@@ -376,15 +494,20 @@ async function releaseForExternalRetryIfNeeded(input: {
   });
   await releaseDelivery(input.config.statePath, input.deliveryKey);
   input.slog.info("repair session did not complete; delivery released for provider redelivery retry");
+  recordRepairTelemetry(input.config, "repair.delivery.released", { attemptKey: input.attemptKey }, {
+    deliveryKey: input.deliveryKey,
+    status: input.observation.status,
+    failureKind: input.observation.failureKind ?? "no_terminal_action",
+  });
 }
 
 function recordSessionObservation(
-  statePath: string,
+  config: ReturnType<typeof loadServiceConfig>,
   attemptKey: string,
   observation: RepairSessionObservation,
   continuationsUsed: number,
 ): void {
-  updateAttempt(statePath, attemptKey, {
+  updateAttempt(config.statePath, attemptKey, {
     lastSessionStatus: observation.status,
     lastSessionFinishReason: observation.finishReason,
     lastSessionFailureKind: observation.failureKind,
@@ -395,7 +518,15 @@ function recordSessionObservation(
     lastTerminalAction: observation.terminalAction,
     lastInputTokens: observation.inputTokens,
     lastOutputTokens: observation.outputTokens,
+    lastCacheReadTokens: observation.cacheReadTokens,
+    lastCacheWriteTokens: observation.cacheWriteTokens,
+    lastTotalTokens: observation.totalTokens,
+    lastStepUsage: observation.stepUsage,
+    lastToolCallCount: observation.toolCallCount,
+    lastToolErrorCount: observation.toolErrorCount,
     lastEventsSeen: observation.eventsSeen,
+    lastTelemetryRecords: observation.eventsSeen,
+    telemetryPath: config.telemetryPath,
     continuationsUsed,
   });
 }
@@ -463,6 +594,12 @@ async function handleSuccessfulPipeline(
       pendingAutoMerge: false,
     });
     mlog.info({ merged: result.merged }, "auto-merge completed");
+    recordRepairTelemetry(config, "auto_merge.completed", eventTelemetryIdentity(event, deliveryKey, attempt.key), {
+      merged: result.merged,
+      changeNumber: result.changeNumber,
+      branch: result.branch,
+      changeUrl: result.changeUrl,
+    });
   } catch (error) {
     await restoreAutoMergeClaim(config.statePath, attempt.key);
     await releaseDelivery(config.statePath, deliveryKey);
@@ -617,6 +754,9 @@ function providerErrorObservationFromError(error: unknown): RepairSessionObserva
     eventsSeen: 0,
     toolSequence: [],
     failedTools: [],
+    stepUsage: [],
+    toolCallCount: 0,
+    toolErrorCount: 0,
     humanInputRequested: false,
   };
 }
@@ -709,4 +849,35 @@ async function resolveRepoPolicy(
 
 function toContextBlock(title: string, value: unknown): string {
   return [title, "", "```json", JSON.stringify(value, null, 2), "```"].join("\n");
+}
+
+function eventTelemetryIdentity(
+  event: NormalizedPipelineEvent,
+  deliveryKey: string,
+  attemptKey?: string | undefined,
+): TelemetryIdentity {
+  return {
+    attemptKey,
+    provider: event.provider,
+    repoSlug: event.repoSlug,
+    deliveryKey,
+    sha: event.sha,
+    pipelineId: event.pipelineId,
+  };
+}
+
+function recordRepairTelemetry(
+  config: ReturnType<typeof loadServiceConfig>,
+  type: string,
+  identity: TelemetryIdentity,
+  payload: unknown,
+  error?: unknown,
+): void {
+  recordTelemetry(config, {
+    source: "repair-service",
+    type,
+    identity,
+    payload,
+    error,
+  });
 }

@@ -62,7 +62,15 @@ export type AttemptPatch = Partial<
     | "lastTerminalAction"
     | "lastInputTokens"
     | "lastOutputTokens"
+    | "lastCacheReadTokens"
+    | "lastCacheWriteTokens"
+    | "lastTotalTokens"
+    | "lastStepUsage"
+    | "lastToolCallCount"
+    | "lastToolErrorCount"
     | "lastEventsSeen"
+    | "lastTelemetryRecords"
+    | "telemetryPath"
     | "continuationsUsed"
     | "providerErrorRetriesUsed"
     | "repoStagedAt"
@@ -87,7 +95,15 @@ export function clearSessionOutcomePatch(): AttemptPatch {
     lastTerminalAction: undefined,
     lastInputTokens: undefined,
     lastOutputTokens: undefined,
+    lastCacheReadTokens: undefined,
+    lastCacheWriteTokens: undefined,
+    lastTotalTokens: undefined,
+    lastStepUsage: undefined,
+    lastToolCallCount: undefined,
+    lastToolErrorCount: undefined,
     lastEventsSeen: undefined,
+    lastTelemetryRecords: undefined,
+    telemetryPath: undefined,
   };
 }
 
@@ -165,6 +181,19 @@ const rerunRequestRecordSchema = z
   })
   .passthrough();
 
+const repairSessionStepUsageSchema = z
+  .object({
+    stepIndex: z.number().int().nonnegative().optional(),
+    finishReason: z.string().optional(),
+    at: z.string().optional(),
+    inputTokens: z.number().int().nonnegative().optional(),
+    outputTokens: z.number().int().nonnegative().optional(),
+    cacheReadTokens: z.number().int().nonnegative().optional(),
+    cacheWriteTokens: z.number().int().nonnegative().optional(),
+    totalTokens: z.number().int().nonnegative().optional(),
+  })
+  .passthrough();
+
 const attemptRecordSchema = z
   .object({
     key: z.string(),
@@ -198,7 +227,15 @@ const attemptRecordSchema = z
     lastTerminalAction: z.string().optional(),
     lastInputTokens: z.number().int().nonnegative().optional(),
     lastOutputTokens: z.number().int().nonnegative().optional(),
+    lastCacheReadTokens: z.number().int().nonnegative().optional(),
+    lastCacheWriteTokens: z.number().int().nonnegative().optional(),
+    lastTotalTokens: z.number().int().nonnegative().optional(),
+    lastStepUsage: z.array(repairSessionStepUsageSchema).optional(),
+    lastToolCallCount: z.number().int().nonnegative().optional(),
+    lastToolErrorCount: z.number().int().nonnegative().optional(),
     lastEventsSeen: z.number().int().nonnegative().optional(),
+    lastTelemetryRecords: z.number().int().nonnegative().optional(),
+    telemetryPath: z.string().optional(),
     continuationsUsed: z.number().int().nonnegative().optional(),
     providerErrorRetriesUsed: z.number().int().nonnegative().optional(),
     repoStagedAt: z.string().optional(),
@@ -338,7 +375,15 @@ function resetAttemptForRetry(
     lastTerminalAction: undefined,
     lastInputTokens: undefined,
     lastOutputTokens: undefined,
+    lastCacheReadTokens: undefined,
+    lastCacheWriteTokens: undefined,
+    lastTotalTokens: undefined,
+    lastStepUsage: undefined,
+    lastToolCallCount: undefined,
+    lastToolErrorCount: undefined,
     lastEventsSeen: undefined,
+    lastTelemetryRecords: undefined,
+    telemetryPath: undefined,
     continuationsUsed: undefined,
     providerErrorRetriesUsed: undefined,
     repoStagedAt: undefined,

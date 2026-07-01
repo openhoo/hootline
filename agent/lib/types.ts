@@ -28,7 +28,15 @@ export interface HootlineServiceConfig {
   providerErrorRetries: number;
   providerErrorRetryBaseMs: number;
   providerErrorRetryMaxMs: number;
+  telemetryMode: TelemetryMode;
+  telemetryDetail: TelemetryDetail;
+  telemetryPath: string;
+  telemetryMaxTextChars: number;
 }
+
+export type TelemetryMode = "local+otlp" | "local" | "otlp" | "off";
+
+export type TelemetryDetail = "metadata" | "summary" | "full";
 
 export interface NormalizedPipelineEvent {
   provider: Provider;
@@ -122,6 +130,20 @@ export type RepairSessionFailureKind =
   | "stream_error"
   | "timeout";
 
+export interface RepairSessionTokenUsage {
+  inputTokens?: number | undefined;
+  outputTokens?: number | undefined;
+  cacheReadTokens?: number | undefined;
+  cacheWriteTokens?: number | undefined;
+  totalTokens?: number | undefined;
+}
+
+export interface RepairSessionStepUsage extends RepairSessionTokenUsage {
+  stepIndex?: number | undefined;
+  finishReason?: string | undefined;
+  at?: string | undefined;
+}
+
 export interface AttemptRecord {
   key: string;
   provider: Provider;
@@ -145,7 +167,15 @@ export interface AttemptRecord {
   lastTerminalAction?: string | undefined;
   lastInputTokens?: number | undefined;
   lastOutputTokens?: number | undefined;
+  lastCacheReadTokens?: number | undefined;
+  lastCacheWriteTokens?: number | undefined;
+  lastTotalTokens?: number | undefined;
+  lastStepUsage?: RepairSessionStepUsage[] | undefined;
+  lastToolCallCount?: number | undefined;
+  lastToolErrorCount?: number | undefined;
   lastEventsSeen?: number | undefined;
+  lastTelemetryRecords?: number | undefined;
+  telemetryPath?: string | undefined;
   continuationsUsed?: number | undefined;
   providerErrorRetriesUsed?: number | undefined;
   repoStagedAt?: string | undefined;

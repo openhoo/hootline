@@ -64,6 +64,57 @@ test("recognizes successful publish_fix as terminal completion", () => {
   assert.equal(shouldSendRepairContinuation(observation, 0, 1), false);
 });
 
+test("aggregates step usage and tool counts", () => {
+  const state = createObservationState();
+  observeStreamEvent(state, {
+    type: "actions.requested",
+    data: {
+      actions: [
+        { toolName: "stage_repository_snapshot" },
+        { toolName: "edit_repo_file" },
+      ],
+    },
+  });
+  observeStreamEvent(state, {
+    type: "action.result",
+    data: {
+      status: "rejected",
+      result: { toolName: "edit_repo_file" },
+    },
+  });
+  observeStreamEvent(state, {
+    type: "step.completed",
+    meta: { at: "2026-06-30T10:00:00.000Z" },
+    data: {
+      stepIndex: 0,
+      finishReason: "tool-calls",
+      usage: { inputTokens: 10, outputTokens: 20, cacheReadTokens: 3, cacheWriteTokens: 4 },
+    },
+  });
+  observeStreamEvent(state, {
+    type: "step.completed",
+    meta: { at: "2026-06-30T10:00:01.000Z" },
+    data: {
+      stepIndex: 1,
+      finishReason: "stop",
+      usage: { inputTokens: 30, outputTokens: 40 },
+    },
+  });
+
+  const observation = finalizeObservation(state);
+
+  assert.equal(observation.inputTokens, 40);
+  assert.equal(observation.outputTokens, 60);
+  assert.equal(observation.cacheReadTokens, 3);
+  assert.equal(observation.cacheWriteTokens, 4);
+  assert.equal(observation.totalTokens, 100);
+  assert.equal(observation.toolCallCount, 2);
+  assert.equal(observation.toolErrorCount, 1);
+  assert.equal(observation.stepUsage.length, 2);
+  assert.equal(observation.stepUsage[0]?.totalTokens, 30);
+  assert.deepEqual(observation.failedTools, ["edit_repo_file"]);
+});
+
 test("recognizes publish_fix immediate auto-merge as merged terminal completion", () => {
   const state = createObservationState();
   observeStreamEvent(state, {

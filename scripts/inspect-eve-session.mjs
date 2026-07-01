@@ -24,6 +24,7 @@ const DEFAULT_STATE_PATHS = [
   "var/pipeline-fixer-state.json",
   "var/pipeline-fixer-fixture-state.json",
 ];
+const DEFAULT_TELEMETRY_PATHS = ["var/hootline-telemetry.jsonl"];
 
 const args = parseArgs(process.argv.slice(2));
 if (args.help) {
@@ -43,6 +44,11 @@ const streamSummary = readSessionStream(workflowDataDir, sessionId);
 const runRecord = readOptionalJson(join(workflowDataDir, "runs", `${sessionId}.json`));
 const statePath = args.state === undefined ? detectStatePath() : args.state;
 const attempt = statePath === undefined ? undefined : findAttempt(readOptionalJson(statePath), sessionId, args.attemptKey);
+const telemetryPath = args.telemetry === undefined ? detectTelemetryPath() : args.telemetry;
+const telemetry = readTelemetrySummary(telemetryPath, {
+  attemptKey: args.attemptKey ?? attempt?.key,
+  sessionId,
+});
 const report = buildReport({
   sessionId,
   workflowDataDir,
@@ -50,6 +56,7 @@ const report = buildReport({
   runRecord,
   attempt,
   statePath,
+  telemetry,
   messageChars: args.messageChars,
 });
 
@@ -67,6 +74,7 @@ function parseArgs(argv) {
     messageChars: 1600,
     sessionId: undefined,
     state: undefined,
+    telemetry: undefined,
     workflowData: undefined,
   };
 
@@ -80,6 +88,8 @@ function parseArgs(argv) {
       parsed.workflowData = requireValue(argv, ++index, arg);
     } else if (arg === "--state") {
       parsed.state = requireValue(argv, ++index, arg);
+    } else if (arg === "--telemetry") {
+      parsed.telemetry = requireValue(argv, ++index, arg);
     } else if (arg === "--attempt-key") {
       parsed.attemptKey = requireValue(argv, ++index, arg);
     } else if (arg === "--message-chars") {
@@ -121,6 +131,7 @@ Usage:
 Options:
   --workflow-data <path>   Eve workflow data directory. Default: .workflow-data
   --state <path>           Hootline state file. Auto-detected from var/*state*.json
+  --telemetry <path>       Hootline telemetry JSONL file. Auto-detected from HOOTLINE_TELEMETRY_PATH or var/
   --attempt-key <key>      Prefer this Hootline attempt when reading state
   --message-chars <n>      Characters to show from the final assistant message. Default: 1600
   --json                   Print the parsed summary as JSON
@@ -288,7 +299,7 @@ function normalizeBase64(value) {
   return value.replace(/-/g, "+").replace(/_/g, "/");
 }
 
-function buildReport({ sessionId, workflowDataDir, streamSummary, runRecord, attempt, statePath, messageChars }) {
+function buildReport({ sessionId, workflowDataDir, streamSummary, runRecord, attempt, statePath, telemetry, messageChars }) {
   const toolCalls = streamSummary.toolCalls.map((call) => ({
     at: call.at,
     result: summarizeToolResult(call.result),
@@ -321,6 +332,7 @@ function buildReport({ sessionId, workflowDataDir, streamSummary, runRecord, att
       finalMessageExcerpt: summarizeFinalMessage(streamSummary.finalMessage?.message ?? "", messageChars),
     },
     attempt: summarizeAttempt(attempt, statePath),
+    telemetry,
   };
 }
 
@@ -392,7 +404,14 @@ function summarizeAttempt(attempt, statePath) {
     continuationsUsed: attempt.continuationsUsed,
     lastInputTokens: attempt.lastInputTokens,
     lastOutputTokens: attempt.lastOutputTokens,
+    lastCacheReadTokens: attempt.lastCacheReadTokens,
+    lastCacheWriteTokens: attempt.lastCacheWriteTokens,
+    lastTotalTokens: attempt.lastTotalTokens,
+    lastToolCallCount: attempt.lastToolCallCount,
+    lastToolErrorCount: attempt.lastToolErrorCount,
     lastEventsSeen: attempt.lastEventsSeen,
+    lastTelemetryRecords: attempt.lastTelemetryRecords,
+    telemetryPath: attempt.telemetryPath,
     repoStagedAt: attempt.repoStagedAt,
     hasLastVerification: attempt.lastVerification !== undefined,
     hasLastPublishResult: attempt.lastPublishResult !== undefined,
@@ -470,17 +489,56 @@ function printReport(report) {
         console.log(
           `- tokens: input=${report.attempt.lastInputTokens ?? "?"} output=${
             report.attempt.lastOutputTokens ?? "?"
+          } cache_read=${report.attempt.lastCacheReadTokens ?? 0} cache_write=${
+            report.attempt.lastCacheWriteTokens ?? 0
+          } total=${report.attempt.lastTotalTokens ?? "?"}`,
+        );
+      }
+      if (report.attempt.lastToolCallCount !== undefined || report.attempt.lastToolErrorCount !== undefined) {
+        console.log(
+          `- tool calls/errors: ${report.attempt.lastToolCallCount ?? "?"}/${
+            report.attempt.lastToolErrorCount ?? "?"
           }`,
         );
       }
       if (report.attempt.lastEventsSeen !== undefined) {
         console.log(`- stream events seen: ${report.attempt.lastEventsSeen}`);
       }
+      if (report.attempt.lastTelemetryRecords !== undefined) {
+        console.log(`- telemetry records: ${report.attempt.lastTelemetryRecords}`);
+      }
+      if (report.attempt.telemetryPath !== undefined) {
+        console.log(`- telemetry path: ${report.attempt.telemetryPath}`);
+      }
       console.log(`- staged: ${report.attempt.repoStagedAt ?? "no"}`);
       console.log(`- verification recorded: ${report.attempt.hasLastVerification ? "yes" : "no"}`);
       console.log(`- publish recorded: ${report.attempt.hasLastPublishResult ? "yes" : "no"}`);
       console.log(`- reruns requested: ${report.attempt.rerunRequests}`);
       if (report.attempt.changeUrl !== undefined) console.log(`- change: ${report.attempt.changeUrl}`);
+    }
+  }
+
+  if (report.telemetry !== undefined) {
+    console.log("\nTelemetry:");
+    if (!report.telemetry.found) {
+      console.log(`- no telemetry file found at ${report.telemetry.path}`);
+    } else {
+      console.log(`- path: ${report.telemetry.path}`);
+      console.log(`- correlated records: ${report.telemetry.records}`);
+      console.log(`- event counts: ${formatCounts(report.telemetry.counts)}`);
+      console.log(`- source counts: ${formatCounts(report.telemetry.sourceCounts)}`);
+      console.log(
+        `- tokens: input=${report.telemetry.tokens.inputTokens} output=${report.telemetry.tokens.outputTokens} cache_read=${report.telemetry.tokens.cacheReadTokens} cache_write=${report.telemetry.tokens.cacheWriteTokens}`,
+      );
+      if (report.telemetry.toolErrors.length > 0) {
+        console.log(`- tool errors: ${report.telemetry.toolErrors.join(", ")}`);
+      }
+      const traceRefs = report.telemetry.recent
+        .filter((record) => record.traceId !== undefined && record.spanId !== undefined)
+        .map((record) => `${record.traceId}/${record.spanId}`);
+      if (traceRefs.length > 0) {
+        console.log(`- recent trace/span refs: ${[...new Set(traceRefs)].slice(-5).join(", ")}`);
+      }
     }
   }
 
@@ -515,6 +573,121 @@ function detectStatePath() {
     .map((name) => join("var", name));
   if (candidates.length === 1) return candidates[0];
   return undefined;
+}
+
+function detectTelemetryPath() {
+  const envPath = process.env.HOOTLINE_TELEMETRY_PATH;
+  if (envPath !== undefined && existsSync(envPath)) return envPath;
+  for (const path of DEFAULT_TELEMETRY_PATHS) {
+    if (existsSync(path)) return path;
+  }
+  return DEFAULT_TELEMETRY_PATHS[0];
+}
+
+function readTelemetrySummary(path, { attemptKey, sessionId }) {
+  if (path === undefined) return undefined;
+  if (!existsSync(path)) return { path, found: false };
+  const records = readFileSync(path, "utf8")
+    .split(/\r?\n/)
+    .filter((line) => line.trim().length > 0)
+    .map((line) => parseTelemetryLine(line))
+    .filter((record) => record !== undefined)
+    .filter((record) => telemetryRecordMatches(record, { attemptKey, sessionId }));
+  const counts = {};
+  const sourceCounts = {};
+  const toolErrors = [];
+  const tokens = {
+    inputTokens: 0,
+    outputTokens: 0,
+    cacheReadTokens: 0,
+    cacheWriteTokens: 0,
+  };
+  for (const record of records) {
+    counts[record.type] = (counts[record.type] ?? 0) + 1;
+    sourceCounts[record.source] = (sourceCounts[record.source] ?? 0) + 1;
+    const status = record.payload?.status;
+    const toolName = record.identity?.toolName ?? record.payload?.result?.toolName;
+    if (record.type === "action.result" && status !== undefined && status !== "completed") {
+      toolErrors.push(toolName === undefined ? String(status) : `${toolName}:${status}`);
+    }
+  }
+  for (const record of selectTelemetryTokenRecords(records)) {
+    tokens.inputTokens += numberOrZero(record.payload?.inputTokens ?? record.payload?.usage?.inputTokens);
+    tokens.outputTokens += numberOrZero(record.payload?.outputTokens ?? record.payload?.usage?.outputTokens);
+    tokens.cacheReadTokens += numberOrZero(record.payload?.cacheReadTokens ?? record.payload?.usage?.cacheReadTokens);
+    tokens.cacheWriteTokens += numberOrZero(record.payload?.cacheWriteTokens ?? record.payload?.usage?.cacheWriteTokens);
+  }
+  return {
+    path,
+    found: true,
+    records: records.length,
+    counts,
+    sourceCounts,
+    tokens,
+    toolErrors,
+    recent: records.slice(-20).map((record) => ({
+      at: record.at,
+      source: record.source,
+      type: record.type,
+      sessionId: record.identity?.sessionId,
+      attemptKey: record.identity?.attemptKey,
+      toolName: record.identity?.toolName,
+      status: record.payload?.status,
+      traceId: record.otel?.traceId,
+      spanId: record.otel?.spanId,
+    })),
+  };
+}
+
+function selectTelemetryTokenRecords(records) {
+  const stepRecords = records.filter((record) => isTelemetryStepUsageRecord(record));
+  if (stepRecords.length > 0) return stepRecords;
+  return records.filter((record) => isTelemetryBoundaryUsageRecord(record));
+}
+
+function isTelemetryStepUsageRecord(record) {
+  return record.source === "eve-stream" && record.type === "step.completed" && hasTelemetryUsage(record);
+}
+
+function isTelemetryBoundaryUsageRecord(record) {
+  return record.type === "repair.session.boundary" && hasTelemetryUsage(record);
+}
+
+function hasTelemetryUsage(record) {
+  return (
+    record.payload?.inputTokens !== undefined ||
+    record.payload?.outputTokens !== undefined ||
+    record.payload?.cacheReadTokens !== undefined ||
+    record.payload?.cacheWriteTokens !== undefined ||
+    record.payload?.usage?.inputTokens !== undefined ||
+    record.payload?.usage?.outputTokens !== undefined ||
+    record.payload?.usage?.cacheReadTokens !== undefined ||
+    record.payload?.usage?.cacheWriteTokens !== undefined
+  );
+}
+
+function parseTelemetryLine(line) {
+  try {
+    const value = JSON.parse(line);
+    return value && typeof value === "object" ? value : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function telemetryRecordMatches(record, { attemptKey, sessionId }) {
+  if (sessionId !== undefined && record.identity?.sessionId === sessionId) return true;
+  if (attemptKey !== undefined && record.identity?.attemptKey === attemptKey) return true;
+  return false;
+}
+
+function numberOrZero(value) {
+  return typeof value === "number" && Number.isFinite(value) ? value : 0;
+}
+
+function formatCounts(counts) {
+  const entries = Object.entries(counts);
+  return entries.length === 0 ? "none" : entries.map(([key, count]) => `${key}=${count}`).join(", ");
 }
 
 function readJson(path) {

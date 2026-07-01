@@ -158,6 +158,19 @@ Core settings:
 - `HOOTLINE_LOG_LEVEL`: Hootline log level,
   `trace|debug|info|warn|error|fatal|silent`. Defaults to `info`.
 - `EVE_LOG_LEVEL`: Eve framework log level.
+- `HOOTLINE_TELEMETRY_MODE`: `local+otlp`, `local`, `otlp`, or `off`.
+  Defaults to `local+otlp`. OTLP export starts only when a standard OTLP
+  endpoint env var is configured.
+- `HOOTLINE_TELEMETRY_DETAIL`: `metadata`, `summary`, or `full`. Defaults to
+  `full`. Full detail stores redacted tool inputs/outputs and assistant text in
+  local JSONL; reasoning text is never stored.
+- `HOOTLINE_TELEMETRY_PATH`: local append-only telemetry JSONL path. Defaults
+  to `var/hootline-telemetry.jsonl`.
+- `HOOTLINE_TELEMETRY_MAX_TEXT_CHARS`: per-string cap before telemetry text is
+  truncated. Defaults to `12000`.
+- `OTEL_EXPORTER_OTLP_ENDPOINT`, `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT`, or
+  `OTEL_EXPORTER_OTLP_METRICS_ENDPOINT`: enable optional OTLP HTTP export when
+  telemetry mode includes `otlp`.
 
 Model settings:
 
@@ -493,8 +506,30 @@ value is passed through `agent/lib/redact.ts` before it is written.
 - Logged errors include stable redacted `errorId` values for support
   correlation.
 
-Tests run with `HOOTLINE_LOG_LEVEL=silent` so application logs do not
-interleave with test output.
+Tests run with `HOOTLINE_LOG_LEVEL=silent` and `HOOTLINE_TELEMETRY_MODE=off` so
+application logs and local telemetry artifacts do not interleave with test
+output.
+
+## Telemetry
+
+Hootline records agent telemetry through two Eve-supported surfaces:
+
+- `agent/instrumentation.ts` attaches Hootline repair context to AI SDK
+  telemetry spans and starts the OpenTelemetry Node SDK when OTLP export is
+  enabled and an OTLP endpoint is configured.
+- `agent/hooks/telemetry.ts` observes Eve's durable stream events after they are
+  recorded and writes correlated local JSONL records.
+
+Local telemetry captures repair lifecycle decisions, session boundaries, model
+step token usage, cache token usage, tool call order, failed/rejected tools,
+continuations, provider-error retries, and terminal actions. Records are
+redacted with the same secret patterns used by logs. `metadata` mode keeps
+routing, status, timing, token, and tool-name fields while omitting IO. `summary`
+mode stores capped redacted summaries. `full` mode stores full redacted payloads
+subject to `HOOTLINE_TELEMETRY_MAX_TEXT_CHARS`.
+
+OTLP spans and metrics are metadata-oriented by default. Full redacted IO is
+kept in the local JSONL artifact, not sent as model input/output span content.
 
 ## Session Inspection
 
@@ -505,10 +540,12 @@ appears quiet, inspect the visible session transcript and tool events:
 npm run session:inspect -- wrun_01KWBMAS9SGYY60502V4G11CYE
 ```
 
-The report includes event counts, tool-call order, step finish reasons, the
-final assistant-message excerpt, and whether Hootline state recorded a staged
-repo, verification, publish, or rerun. Use `--message-chars` to change excerpt
-length or `--json` for machine-readable output.
+The report includes event counts, tool-call order, step finish reasons, token
+usage, tool failures, correlated telemetry counts, the final assistant-message
+excerpt, and whether Hootline state recorded a staged repo, verification,
+publish, or rerun. Use `--message-chars` to change excerpt length,
+`--telemetry` to point at a non-default JSONL artifact, or `--json` for
+machine-readable output.
 
 You can also read the live Eve stream while the dev server is running:
 

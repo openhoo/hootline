@@ -1,10 +1,12 @@
 import { parse } from "yaml";
 import { z } from "zod";
 
-import type { HootlineServiceConfig, Provider, RepoPolicy } from "./types.ts";
+import type { HootlineServiceConfig, Provider, RepoPolicy, TelemetryDetail, TelemetryMode } from "./types.ts";
 
 const publishModeSchema = z.enum(["pr_mr", "push_branch", "auto_merge"]);
 const nonEmptyStringArraySchema = z.array(z.string().min(1)).min(1);
+const telemetryModes = ["local+otlp", "local", "otlp", "off"] as const satisfies readonly TelemetryMode[];
+const telemetryDetails = ["metadata", "summary", "full"] as const satisfies readonly TelemetryDetail[];
 
 const autoMergeSchema = z
   .object({
@@ -74,6 +76,24 @@ export function loadServiceConfig(env: NodeJS.ProcessEnv = process.env): Hootlin
     ),
     providerErrorRetryBaseMs,
     providerErrorRetryMaxMs,
+    telemetryMode: readEnum(
+      env.HOOTLINE_TELEMETRY_MODE,
+      "HOOTLINE_TELEMETRY_MODE",
+      telemetryModes,
+      "local+otlp",
+    ),
+    telemetryDetail: readEnum(
+      env.HOOTLINE_TELEMETRY_DETAIL,
+      "HOOTLINE_TELEMETRY_DETAIL",
+      telemetryDetails,
+      "full",
+    ),
+    telemetryPath: readNonEmpty(env.HOOTLINE_TELEMETRY_PATH) ?? "var/hootline-telemetry.jsonl",
+    telemetryMaxTextChars: readIntegerInRange(
+      env.HOOTLINE_TELEMETRY_MAX_TEXT_CHARS,
+      "HOOTLINE_TELEMETRY_MAX_TEXT_CHARS",
+      { defaultValue: 12_000, min: 100, max: 1_000_000 },
+    ),
   };
 }
 
@@ -131,4 +151,16 @@ function readIntegerInRange(
     throw new Error(`${name} must be an integer between ${options.min} and ${options.max}.`);
   }
   return parsed;
+}
+
+function readEnum<T extends string>(
+  value: string | undefined,
+  name: string,
+  allowed: readonly T[],
+  defaultValue: T,
+): T {
+  const trimmed = readNonEmpty(value);
+  if (trimmed === undefined) return defaultValue;
+  if ((allowed as readonly string[]).includes(trimmed)) return trimmed as T;
+  throw new Error(`${name} must be one of: ${allowed.join(", ")}.`);
 }
