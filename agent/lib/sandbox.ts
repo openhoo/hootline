@@ -13,6 +13,7 @@ const log = createLogger("lib.sandbox");
 const SNAPSHOT_MARKER_PATH = ".hootline/staged-repository.json";
 const MAX_COMMAND_LENGTH = 500;
 const MAX_VERIFICATION_STREAM_CHARS = 6_000;
+const UNSUPPORTED_ALLOWLIST_FALLBACK_ENV = "HOOTLINE_ALLOW_UNSUPPORTED_SANDBOX_ALLOWLIST_FALLBACK";
 
 interface VerificationCommandResult {
   command: string;
@@ -31,6 +32,7 @@ interface VerificationResult {
     applied: boolean;
     restoredDenyAll: boolean;
     error?: string;
+    fallback?: "allow-all";
     restoreError?: string;
   };
 }
@@ -366,18 +368,45 @@ export async function runVerificationCommandsWithPolicy(
     networkPolicy.applied = true;
   } catch (error) {
     const message = formatNetworkPolicyError("apply", error);
-    log.warn(
-      { verificationPolicy: networkPolicy.verificationPolicy, detail: message },
-      "sandbox network policy apply failed; skipping verification",
-    );
-    return {
-      ok: false,
-      results: [],
-      networkPolicy: {
-        ...networkPolicy,
-        error: message,
-      },
-    };
+    if (shouldFallbackUnsupportedAllowlist(policy)) {
+      try {
+        await sandbox.setNetworkPolicy("allow-all");
+        networkPolicy.applied = true;
+        networkPolicy.error = message;
+        networkPolicy.fallback = "allow-all";
+        log.warn(
+          { verificationPolicy: networkPolicy.verificationPolicy, detail: message },
+          "sandbox network allowlist apply failed; falling back to allow-all",
+        );
+      } catch (fallbackError) {
+        const fallbackMessage = formatNetworkPolicyError("apply fallback allow-all", fallbackError);
+        log.warn(
+          { verificationPolicy: networkPolicy.verificationPolicy, detail: fallbackMessage },
+          "sandbox network policy fallback failed; skipping verification",
+        );
+        return {
+          ok: false,
+          results: [],
+          networkPolicy: {
+            ...networkPolicy,
+            error: `${message}; ${fallbackMessage}`,
+          },
+        };
+      }
+    } else {
+      log.warn(
+        { verificationPolicy: networkPolicy.verificationPolicy, detail: message },
+        "sandbox network policy apply failed; skipping verification",
+      );
+      return {
+        ok: false,
+        results: [],
+        networkPolicy: {
+          ...networkPolicy,
+          error: message,
+        },
+      };
+    }
   }
 
   let result: VerificationResult;
@@ -466,6 +495,13 @@ export async function applySandboxNetworkPolicy(
     return;
   }
   await sandbox.setNetworkPolicy({ allow: [...policy.sandboxNetworkAllow] });
+}
+
+function shouldFallbackUnsupportedAllowlist(policy: RepoPolicy): boolean {
+  return (
+    policy.sandboxNetworkAllow.length > 0 &&
+    process.env[UNSUPPORTED_ALLOWLIST_FALLBACK_ENV] === "allow-all"
+  );
 }
 
 function parseGitStatusEntries(output: string): Array<{ status: "added" | "modified" | "deleted"; path: string }> {
@@ -1011,7 +1047,7 @@ function assertSafeVerificationCommand(command: string): void {
 }
 
 function buildRepoCommand(command: string): string {
-  return `bash -lc ${shellQuote(`set -euo pipefail; cd "$1"; shift; ${command}`)} -- /workspace/repo`;
+  return `bash -lc ${shellQuote(`set -euo pipefail; export PATH="$HOME/.bun/bin:/root/.bun/bin:/home/vercel-sandbox/.bun/bin:$PATH"; cd "$1"; shift; ${command}`)} -- /workspace/repo`;
 }
 
 function capModelVisibleText(value: string): { value: string; truncated: boolean } {

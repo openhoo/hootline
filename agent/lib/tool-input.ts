@@ -28,8 +28,6 @@ export const summarySchema = {
   type: "object",
   properties: {
     summary: { type: "string", minLength: 1, maxLength: SUMMARY_MAX },
-    message: { type: "string", minLength: 1, maxLength: SUMMARY_MAX },
-    body: { type: "string", minLength: 1, maxLength: SUMMARY_MAX },
   },
   additionalProperties: true,
 } as const;

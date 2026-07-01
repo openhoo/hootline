@@ -26,11 +26,12 @@ operator tooling, benchmark infrastructure, tests, or documentation.
 
 ## Benchmarks
 
-- `benchmarks/fixtures/projects/`: realistic first-party fixture applications
-  used by the simulated provider benchmark. Each project has its own policy,
-  source tree, tests, and verification command. Fixture apps should keep enough
-  domain context around each bug that the agent has to navigate neighboring
-  modules, not just patch an isolated toy function.
+- `benchmarks/fixtures/projects/`: realistic first-party fullstack fixture
+  monorepos used by the simulated provider benchmark. Each project has its own
+  policy, lockfile, React/Vite client, Express API, shared contracts, domain
+  packages, tests, and verification command. Fixture apps should keep enough
+  cross-package context around each bug that the agent has to navigate
+  neighboring modules, not just patch an isolated toy function.
 - `scripts/fixture-scenarios.mjs`: scenario catalog and mutation helpers for
   simulated benchmark scenarios, including project metadata, template paths, and
   multi-file mutation definitions for complex issue classes.

@@ -72,6 +72,16 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+function restoreScenarioMutation(fixturePath: string, scenario: { id: string }) {
+  for (const mutation of scenarioMutations(scenario)) {
+    const sourcePath = join(fixturePath, mutation.sourcePath);
+    const source = readFileSync(sourcePath, "utf8");
+    const count = source.split(mutation.failingText).length - 1;
+    assert.equal(count, 1, `${scenario.id} should contain failing text exactly once before restore`);
+    writeFileSync(sourcePath, source.replace(mutation.failingText, mutation.passingText));
+  }
+}
+
 test("fixture scenarios replace exactly one passing source region", () => {
   const tempRoot = mkdtempSync(join(tmpdir(), "hootline-fixture-scenarios-"));
   try {
@@ -104,70 +114,56 @@ test("fixture scenarios replace exactly one passing source region", () => {
 });
 
 test("fixture scenario selection supports all and rejects unknown ids", () => {
-  assert.equal(resolveScenario("shipping-threshold-basis").sourcePath, "src/shipping.js");
+  assert.equal(resolveScenario("commerce-domain-shipping-threshold").sourcePath, "packages/domain/src/shipping.ts");
   assert.deepEqual(projectIds(), ["commerce-platform", "support-desk"]);
   assert.deepEqual(
     resolveProjects("support-desk").map((project: { id: string }) => project.id),
     ["support-desk"],
   );
   assert.equal(resolveScenarios("all").length, SCENARIOS.length);
-  assert.equal(SCENARIOS.length, 25);
+  assert.equal(SCENARIOS.length, 20);
   assert.deepEqual(
-    resolveScenarios("shipping-threshold-basis,percentage-rounding").map(
+    resolveScenarios("commerce-domain-shipping-threshold,commerce-domain-payment-idempotency").map(
       (scenario: { id: string }) => scenario.id,
     ),
-    ["shipping-threshold-basis", "percentage-rounding"],
+    ["commerce-domain-shipping-threshold", "commerce-domain-payment-idempotency"],
   );
   assert.deepEqual(
     resolveScenarios("all", { projects: "support-desk" }).map((scenario: { projectId: string }) => scenario.projectId),
-    Array(12).fill("support-desk"),
+    Array(10).fill("support-desk"),
   );
   assert.throws(() => resolveScenario("missing"), /Unknown fixture scenario/);
   assert.throws(() => resolveProjects("missing"), /Unknown fixture project/);
 });
 
 test("complex fixture scenarios expose all mutated and expected repair files", () => {
-  const scenario = resolveScenario("checkout-money-shipping-tax-cascade");
-  const commerceCascade = resolveScenario("account-aware-fulfillment-cascade");
+  const scenario = resolveScenario("commerce-checkout-cascade");
   const support = resolveScenario("support-triage-cascade");
-  const requesterCascade = resolveScenario("requester-profile-triage-cascade");
 
   assert.equal(scenario.projectId, "commerce-platform");
   assert.equal(scenario.complexity, "complex");
-  assert.deepEqual(scenarioSourcePaths(scenario), ["src/money.js", "src/shipping.js", "src/tax.js"]);
+  assert.deepEqual(scenarioSourcePaths(scenario), [
+    "packages/domain/src/pricing.ts",
+    "packages/domain/src/shipping.ts",
+    "packages/domain/src/tax.ts",
+  ]);
   assert.deepEqual(scenarioExpectedRepairFiles(scenario), [
-    "src/money.js",
-    "src/shipping.js",
-    "src/tax.js",
+    "packages/domain/src/pricing.ts",
+    "packages/domain/src/shipping.ts",
+    "packages/domain/src/tax.ts",
   ]);
   assert.equal(support.projectId, "support-desk");
   assert.equal(support.complexity, "complex");
   assert.equal(scenarioMutations(support).length, 3);
-  assert.deepEqual(scenarioSourcePaths(support), ["src/tickets.js", "src/routing.js", "src/sla.js"]);
-  assert.deepEqual(scenarioExpectedRepairFiles(support), ["src/tickets.js", "src/routing.js", "src/sla.js"]);
-  assert.equal(commerceCascade.projectId, "commerce-platform");
-  assert.equal(commerceCascade.complexity, "complex");
-  assert.deepEqual(scenarioSourcePaths(commerceCascade), [
-    "src/checkout.js",
-    "src/fulfillment.js",
-    "src/payments.js",
+  assert.deepEqual(scenarioSourcePaths(support), [
+    "packages/domain/src/workflow.ts",
+    "packages/domain/src/routing.ts",
+    "packages/domain/src/notifications.ts",
   ]);
-  assert.deepEqual(scenarioExpectedRepairFiles(commerceCascade), [
-    "src/checkout.js",
-    "src/fulfillment.js",
-    "src/payments.js",
-  ]);
-  assert.equal(requesterCascade.projectId, "support-desk");
-  assert.equal(requesterCascade.complexity, "complex");
-  assert.deepEqual(scenarioSourcePaths(requesterCascade), [
-    "src/workflow.js",
-    "src/routing.js",
-    "src/notifications.js",
-  ]);
-  assert.deepEqual(scenarioExpectedRepairFiles(requesterCascade), [
-    "src/workflow.js",
-    "src/routing.js",
-    "src/notifications.js",
+  assert.deepEqual(scenarioExpectedRepairFiles(support), [
+    "packages/domain/src/workflow.ts",
+    "packages/domain/src/routing.ts",
+    "packages/domain/src/notifications.ts",
   ]);
 });
 
@@ -185,7 +181,20 @@ test("tracked fixture policies and expected files exist and parse", () => {
     });
     assert.equal(policy.verificationCommands.length > 0, true);
     assert.equal(policy.allowedFileGlobs.length > 0, true);
+    assert.deepEqual(policy.sandboxNetworkAllow, ["registry.npmjs.org"]);
   }
+});
+
+test("audit redaction fixture keeps the redacted audit event shape explicit", () => {
+  const repoRoot = fileURLToPath(new URL("..", import.meta.url));
+  const source = readFileSync(
+    join(repoRoot, "benchmarks/fixtures/projects/support-desk/packages/domain/src/audit.ts"),
+    "utf8",
+  );
+
+  assert.match(source, /export interface AuditEvent/u);
+  assert.match(source, /internalNote: string \| undefined;/u);
+  assert.match(source, /export function recordAuditEvent\(event: AuditInput\): AuditEvent/u);
 });
 
 test("simulated benchmark dry-run does not require a server or provider credentials", () => {
@@ -203,7 +212,7 @@ test("simulated benchmark dry-run does not require a server or provider credenti
       "--projects",
       "commerce-platform",
       "--scenarios",
-      "checkout-money-shipping-tax-cascade",
+      "commerce-checkout-cascade",
       "--concurrency",
       "2",
       "--repo",
@@ -215,7 +224,7 @@ test("simulated benchmark dry-run does not require a server or provider credenti
   assert.match(output, /Mode: dry run/);
   assert.match(output, /Concurrency: 2/);
   assert.match(output, /Projects: commerce-platform/);
-  assert.match(output, /checkout-money-shipping-tax-cascade/);
+  assert.match(output, /commerce-checkout-cascade/);
   assert.match(output, /dry_run: 1/);
   assert.equal(existsSync(artifactDir), false);
   rmSync(tempRoot, { recursive: true, force: true });
@@ -288,24 +297,49 @@ test("tracked simulated fixture is green before each scenario mutation and red a
   const childEnv = { ...process.env };
   delete childEnv.NODE_TEST_CONTEXT;
   try {
-    for (const scenario of SCENARIOS) {
-      const repoPath = join(tempRoot, scenario.id);
-      const templatePath = join(repoRoot, scenario.templatePath);
+    for (const project of resolveProjects("all")) {
+      const repoPath = join(tempRoot, project.id);
+      const templatePath = join(repoRoot, project.templatePath);
       cpSync(templatePath, repoPath, { recursive: true });
-      assertScenarioBaseline(repoPath, scenario);
-      assert.equal(spawnSync("npm", ["test"], { cwd: repoPath, env: childEnv, stdio: "pipe" }).status, 0);
-      applyScenarioMutation(repoPath, scenario);
-      const mutated = spawnSync("npm", ["test"], {
+      const install = spawnSync("bun", ["ci"], {
         cwd: repoPath,
         encoding: "utf8",
         env: childEnv,
         stdio: "pipe",
       });
-      assert.notEqual(
-        mutated.status,
+      assert.equal(
+        install.status,
         0,
-        `${scenario.id} mutation should fail tests.\nstdout:\n${mutated.stdout}\nstderr:\n${mutated.stderr}`,
+        `${project.id} install should succeed.\nstdout:\n${install.stdout}\nstderr:\n${install.stderr}`,
       );
+      const baseline = spawnSync("bun", ["run", "test"], {
+        cwd: repoPath,
+        encoding: "utf8",
+        env: childEnv,
+        stdio: "pipe",
+      });
+      assert.equal(
+        baseline.status,
+        0,
+        `${project.id} baseline tests should pass.\nstdout:\n${baseline.stdout}\nstderr:\n${baseline.stderr}`,
+      );
+
+      for (const scenario of resolveScenarios("all", { projects: project.id })) {
+        assertScenarioBaseline(repoPath, scenario);
+        applyScenarioMutation(repoPath, scenario);
+        const mutated = spawnSync("bun", ["run", "test"], {
+          cwd: repoPath,
+          encoding: "utf8",
+          env: childEnv,
+          stdio: "pipe",
+        });
+        assert.notEqual(
+          mutated.status,
+          0,
+          `${scenario.id} mutation should fail tests.\nstdout:\n${mutated.stdout}\nstderr:\n${mutated.stderr}`,
+        );
+        restoreScenarioMutation(repoPath, scenario);
+      }
     }
   } finally {
     rmSync(tempRoot, { recursive: true, force: true });
@@ -373,14 +407,14 @@ test("benchmark helpers classify attempt and PR check outcomes", () => {
 });
 
 test("simulated failure context does not expose expected repair file oracle", () => {
-  const scenario = resolveScenario("shipping-threshold-basis");
+  const scenario = resolveScenario("commerce-domain-shipping-threshold");
   const log = buildFailureLog(scenario, {
     stdout: "AssertionError: shipping threshold should use subtotal basis",
     stderr: "",
   });
 
   assert.doesNotMatch(log, /Expected repair files/);
-  assert.doesNotMatch(log, /src\/shipping\.js/);
+  assert.doesNotMatch(log, /packages\/domain\/src\/shipping\.ts/);
 });
 
 test("fixture command runner times out hanging commands", () => {
@@ -444,6 +478,7 @@ test("simulated benchmark server env receives fixture command timeout option", (
       webhookSecret: "secret",
     });
 
+    assert.equal(env.HOOTLINE_ALLOW_UNSUPPORTED_SANDBOX_ALLOWLIST_FALLBACK, "allow-all");
     assert.equal(env.HOOTLINE_SIMULATED_FIXTURE_COMMAND_TIMEOUT_MS, "1234");
     assert.equal(env.HOOTLINE_GITHUB_PROVIDER_BACKEND, "simulated");
     assert.equal(env.HOOTLINE_MODEL_PROVIDER, "mock");
@@ -465,7 +500,7 @@ test("simulated benchmark CLI preserves inline values containing equals", () => 
 });
 
 test("benchmark rows retain complex scenario metadata", () => {
-  const scenario = resolveScenario("checkout-money-shipping-tax-cascade");
+  const scenario = resolveScenario("commerce-checkout-cascade");
   const row = buildBenchmarkRow({
     inspector: undefined,
     prChecks: undefined,
@@ -485,11 +520,15 @@ test("benchmark rows retain complex scenario metadata", () => {
   assert.equal(row.projectId, "commerce-platform");
   assert.equal(row.projectName, "Commerce Platform");
   assert.equal(row.scenarioMutationCount, 3);
-  assert.deepEqual(row.expectedRepairFiles, ["src/money.js", "src/shipping.js", "src/tax.js"]);
+  assert.deepEqual(row.expectedRepairFiles, [
+    "packages/domain/src/pricing.ts",
+    "packages/domain/src/shipping.ts",
+    "packages/domain/src/tax.ts",
+  ]);
 });
 
 test("benchmark rows record the effective model environment", () => {
-  const scenario = resolveScenario("shipping-threshold-basis");
+  const scenario = resolveScenario("commerce-domain-shipping-threshold");
   const row = buildBenchmarkRow({
     inspector: undefined,
     modelEnv: {
@@ -561,6 +600,7 @@ test("benchmark summarizer finds latest attempt for a sha", () => {
   assert.equal(summary.averageContinuations, 1);
   assert.equal(summary.averageProviderErrorRetries, 1);
   assert.deepEqual(summary.failureKinds, {});
+  assert.equal(summary.rowsWithFailedTools, 1);
   assert.deepEqual(summary.byComplexity.complex, {
     total: 1,
     publishedGreen: 1,
@@ -592,6 +632,7 @@ test("benchmark summarizer finds latest attempt for a sha", () => {
     publishedGreenRate: 1,
   });
   assert.deepEqual(summary.failedTools, { edit_repo_file: 1 });
+  assert.deepEqual(summary.recoveredFailedTools, { edit_repo_file: 1 });
 });
 
 test("benchmark improvement signals surface non-green patterns", () => {
@@ -618,4 +659,10 @@ test("benchmark improvement signals surface non-green patterns", () => {
   assert.match(signals, /complex scenarios/);
   assert.match(signals, /stopped without a terminal Hootline action/);
   assert.match(signals, /Most common failed tool: edit_repo_file \(2 occurrence\(s\)\)/);
+
+  const greenSignals = summarizeImprovementSignals([
+    { status: "published_green", failedTools: ["publish_fix", "publish_fix"] },
+  ]).join("\n");
+  assert.match(greenSignals, /No non-green benchmark samples were recorded/);
+  assert.match(greenSignals, /2 recovered tool failure\(s\).*publish_fix \(2 occurrence\(s\)\)/);
 });

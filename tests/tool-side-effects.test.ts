@@ -69,6 +69,44 @@ test("post_provider_comment redacts model-authored secrets before provider posti
   });
 });
 
+test("publish_fix uses canonical summary even when extra alias-like fields are present", async () => {
+  await withAttempt(async ({ attemptKey, event, statePath }) => {
+    updateAttempt(statePath, attemptKey, {
+      repoStagedAt: event.receivedAt,
+      repoStagedFiles: 1,
+      repoStagedBytes: 32,
+    });
+    const sandbox = new FakePublishSandbox(attemptKey, event);
+    let publishedSummary = "";
+    const restoreProvider = registerProviderClient("github", makeProvider({
+      async publishFix(input) {
+        publishedSummary = input.summary;
+        return {
+          provider: "github",
+          mode: input.policy.mode,
+          branch: "hootline/fix/main/abc123def456",
+          message: "published",
+        };
+      },
+    }));
+    try {
+      const output = await publishFixTool.execute(
+        {
+          summary: "Use the canonical summary.",
+          body: "Do not publish this body alias.",
+          message: "Do not publish this message alias.",
+        },
+        makeContext(attemptKey, sandbox),
+      ) as { published: boolean };
+
+      assert.equal(output.published, true);
+      assert.equal(publishedSummary, "Use the canonical summary.");
+    } finally {
+      restoreProvider();
+    }
+  });
+});
+
 test("publish_fix immediately merges auto_merge changes when follow-up pipeline is not required", async () => {
   await withAttempt(async ({ attemptKey, event, statePath }) => {
     updateAttempt(statePath, attemptKey, {

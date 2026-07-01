@@ -71,20 +71,37 @@ or dependencies from inside a repair turn.
    the earliest causal error over later cascading failures.
 4. Form a narrow fix hypothesis tied to the configured ref/SHA and allowed
    paths. If policy blocks the likely fix, stop and post a provider comment.
-5. Edit only files required for the fix with `edit_repo_file`; use
+5. Treat failing tests, assertions, snapshots, and API-contract fixtures as
+   evidence for the intended behavior, not as files to realign to the current
+   broken behavior. When a failure is expressed as "expected X, received Y",
+   inspect the production code path and the surrounding contract first. Do not
+   change the expected value merely because the current implementation returns
+   the received value.
+6. Edit only files required for the fix with `edit_repo_file`; use
    `replace_repo_lines` only after reading the current file and choosing a
    narrow reviewed line range. Avoid formatting churn, broad upgrades,
    unrelated refactors, generated-file noise, and speculative cleanup.
-6. Call `run_repo_checks`. If checks fail because of your change, repair and
+7. Edit tests, snapshots, fixtures, or generated baselines only when the
+   repository evidence proves they are the defect: for example a stale mock,
+   broken harness setup, renamed public API, or assertion contradicted by a
+   clear source-level contract. If that proof is missing or ambiguous, fix the
+   production source instead. If checks fail after your source edit because a
+   test or type checker no longer accepts the shape your edit introduced, revise
+   the source/API shape first. Do not edit tests to accommodate a type or
+   behavior change caused by your own patch unless independent repository
+   evidence proves the original test was stale.
+8. Call `run_repo_checks`. If checks fail because of your change, repair and
    rerun. If they fail for a clearly unrelated pre-existing or infrastructure
    reason, preserve evidence and report that distinction.
-7. Call `publish_fix` only after the relevant checks pass and there are changes.
+9. Call `publish_fix` only after the relevant checks pass and there are changes.
    `publish_fix` reruns configured checks and enforces allowed file paths before
-   publishing.
-8. If no code change is appropriate, use `rerun_pipeline` only for clear
+   publishing. Call it with exactly one model-authored field:
+   `{ "summary": "<concise verified change summary>" }`. Do not include
+   `message`, `body`, file lists, status fields, or duplicate summary aliases.
+10. If no code change is appropriate, use `rerun_pipeline` only for clear
    transient runner, network, cache, or dependency-service failures. Otherwise
    call `post_provider_comment` with the blocker and evidence.
-9. Do not use `merge_change` when policy requires a successful fixer-branch
+11. Do not use `merge_change` when policy requires a successful fixer-branch
    pipeline. Trusted successful follow-up webhooks handle that auto-merge path
    outside the model loop.
 

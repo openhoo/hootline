@@ -239,7 +239,7 @@ async function runScenarioSample({
       jobs: [
         {
           id: String(pipelineId),
-          name: "simulated npm test",
+          name: "simulated fixture verification",
           url: `https://simulated.github.local/${options.repo}/actions/runs/${pipelineId}`,
           conclusion: "failure",
           status: "completed",
@@ -358,7 +358,14 @@ async function waitForRepairResult({ deliveryId, options, pipelineId, serverUrl,
     if (attempt !== undefined && isTerminalRepairAttempt(attempt)) {
       lastAttempt = attempt;
       if (attempt.lastPublishResult !== undefined || attempt.changeNumber !== undefined) {
-        return { status: "published", attempt, redeliveries };
+        if (attempt.lastSessionEndedAt !== undefined) {
+          return { status: "published", attempt, redeliveries };
+        }
+        // publish_fix writes the provider result before Eve emits the final
+        // action.result observation. Wait for that observation so recovered
+        // failed tool calls are captured in benchmark rows.
+        await sleep(options.pollIntervalMs);
+        continue;
       }
       if (!shouldRedeliverRepairAttempt(attempt) || redeliveries + attempt.attempts >= attempt.policy.maxAttemptsPerSha) {
         return { status: "terminal_without_publish", attempt, redeliveries };
@@ -492,6 +499,7 @@ function buildBenchmarkServerEnv({
   const env = {
     ...loadBenchmarkEnvFiles(sourceRoot),
     GITHUB_WEBHOOK_SECRET: webhookSecret,
+    HOOTLINE_ALLOW_UNSUPPORTED_SANDBOX_ALLOWLIST_FALLBACK: "allow-all",
     HOOTLINE_GITHUB_PROVIDER_BACKEND: "simulated",
     HOOTLINE_SIMULATED_FIXTURE_COMMAND_TIMEOUT_MS: String(fixtureCommandTimeoutMs ?? DEFAULTS.fixtureCommandTimeoutMs),
     HOOTLINE_SIMULATOR_STATE_PATH: simulatorStatePath,
@@ -780,6 +788,9 @@ function renderMarkdownSummary(report) {
     `Average attempts: ${report.summary.averageAttempts.toFixed(2)}`,
     `Average continuations: ${report.summary.averageContinuations.toFixed(2)}`,
     `Average provider-error retries: ${report.summary.averageProviderErrorRetries.toFixed(2)}`,
+    `Rows with failed tool calls: ${report.summary.rowsWithFailedTools}`,
+    `Failed tool calls: ${formatCountsOrNone(report.summary.failedTools)}`,
+    `Recovered failed tool calls in green samples: ${formatCountsOrNone(report.summary.recoveredFailedTools)}`,
     "",
     "## By Project",
     "",
@@ -853,6 +864,9 @@ function printSummary(rows, artifactDir, dryRun) {
   console.log(`- published green: ${summary.publishedGreen}`);
   console.log(`- published green rate: ${(summary.publishedGreenRate * 100).toFixed(1)}%`);
   console.log(`- average provider-error retries: ${summary.averageProviderErrorRetries.toFixed(2)}`);
+  console.log(`- rows with failed tool calls: ${summary.rowsWithFailedTools}`);
+  console.log(`- failed tool calls: ${formatCountsOrNone(summary.failedTools)}`);
+  console.log(`- recovered failed tool calls in green samples: ${formatCountsOrNone(summary.recoveredFailedTools)}`);
   for (const [status, count] of Object.entries(summary.counts)) {
     console.log(`- ${status}: ${count}`);
   }
@@ -894,6 +908,11 @@ function formatCounts(counts) {
   return Object.entries(counts)
     .map(([status, count]) => `${status}: ${count}`)
     .join(", ");
+}
+
+function formatCountsOrNone(counts) {
+  const formatted = formatCounts(counts ?? {});
+  return formatted.length === 0 ? "none" : formatted;
 }
 
 function readJsonFile(path, fallback) {

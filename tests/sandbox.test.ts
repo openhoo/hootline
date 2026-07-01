@@ -462,6 +462,34 @@ test("verification network allowlist is restored to deny-all and restore failure
   assert.deepEqual(sandbox.networkPolicies, [{ allow: ["registry.npmjs.org"] }, "deny-all"]);
 });
 
+test("verification network allowlist can fall back to allow-all for unsupported sandbox backends", async () => {
+  const sandbox = new FakeSandbox();
+  sandbox.failNetworkPolicyCall = 1;
+  sandbox.commandResults.push({ exitCode: 0, stdout: "ok", stderr: "" });
+  const previousFallback = process.env.HOOTLINE_ALLOW_UNSUPPORTED_SANDBOX_ALLOWLIST_FALLBACK;
+  process.env.HOOTLINE_ALLOW_UNSUPPORTED_SANDBOX_ALLOWLIST_FALLBACK = "allow-all";
+  try {
+    const result = await runVerificationCommandsWithPolicy(
+      sandbox,
+      makePolicy({ sandboxNetworkAllow: ["registry.npmjs.org"], verificationCommands: ["npm test"] }),
+    );
+
+    assert.equal(result.ok, true);
+    assert.equal(result.networkPolicy?.verificationPolicy, "allowlist");
+    assert.equal(result.networkPolicy?.applied, true);
+    assert.equal(result.networkPolicy?.fallback, "allow-all");
+    assert.equal(result.networkPolicy?.restoredDenyAll, true);
+    assert.match(result.networkPolicy?.error ?? "", /apply network policy/);
+    assert.deepEqual(sandbox.networkPolicies, [{ allow: ["registry.npmjs.org"] }, "allow-all", "deny-all"]);
+  } finally {
+    if (previousFallback === undefined) {
+      delete process.env.HOOTLINE_ALLOW_UNSUPPORTED_SANDBOX_ALLOWLIST_FALLBACK;
+    } else {
+      process.env.HOOTLINE_ALLOW_UNSUPPORTED_SANDBOX_ALLOWLIST_FALLBACK = previousFallback;
+    }
+  }
+});
+
 test("snapshot marker ties staged repository to the current attempt and sandbox", async () => {
   const sandbox = new FakeSandbox();
   const attempt = makeAttempt();

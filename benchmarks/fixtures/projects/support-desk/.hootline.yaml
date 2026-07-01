@@ -3,10 +3,13 @@ mode: pr_mr
 allowedBranches:
   - main
 allowedFileGlobs:
-  - src/**
+  - apps/**/src/**
+  - packages/**/src/**
 verificationCommands:
-  - npm test
-sandboxNetworkAllow: []
+  - bun ci
+  - bun run verify
+sandboxNetworkAllow:
+  - registry.npmjs.org
 fixBranchPrefix: hootline/fix
 maxAttemptsPerSha: 2
 maxSnapshotBytes: 10485760

@@ -349,7 +349,7 @@ creating benchmark artifacts or simulator state.
 Run one deterministic smoke sample with Eve's mock model:
 
 ```sh
-npm run benchmark:sim -- --mock-model --scenarios shipping-threshold-basis --samples 1
+npm run benchmark:sim -- --mock-model --scenarios commerce-domain-shipping-threshold --samples 1
 ```
 
 Run only one fixture project:
@@ -377,12 +377,18 @@ different bound.
 
 The benchmark projects are intentionally larger than the individual scenario
 mutations. The default suite currently includes `commerce-platform` and
-`support-desk`, each with its own `package.json`, `.hootline.yaml`, `src/`, and
-`test/` tree. This makes the repair loop navigate realistic project directories
-even when a scenario changes only one business rule. The fixtures include
-cross-module workflows such as customer-aware checkout tax, warehouse
-reservation, freight fulfillment, payment authorization, requester-profile
-inference, queue routing, localized notifications, audit, and reporting.
+`support-desk`, each as a fullstack Bun workspace monorepo with React/Vite
+TypeScript clients, Express TypeScript APIs, shared contracts, domain packages,
+test utilities, `bun.lock`, and repo-local `.hootline.yaml` policy. The current
+scenario generation replaces the older simple fixture catalog with 20 fullstack
+scenarios covering client behavior, API validation, shared contracts, domain
+logic, and multi-file cascade repairs.
+
+Fixture verification installs dependencies from the fixture lockfile and then
+runs the fixture's typecheck, build, and test suite with Bun. Because Bun
+resolves public packages from the npm registry, fixture policies allow
+`registry.npmjs.org` during verification and keep `node_modules/` plus build
+output ignored so dependency installs do not become publishable changes.
 
 The runner starts a built local Eve server automatically unless `--server-url`
 is supplied. For auto-started servers it sets

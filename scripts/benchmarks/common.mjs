@@ -109,6 +109,8 @@ export function summarizeRows(rows) {
   const byMutationCount = {};
   const failureKinds = {};
   const failedTools = {};
+  const recoveredFailedTools = {};
+  let rowsWithFailedTools = 0;
   for (const row of rows) {
     counts[row.status] = (counts[row.status] ?? 0) + 1;
     recordSummaryGroup(byProject, row.projectId ?? "unknown", row);
@@ -120,8 +122,13 @@ export function summarizeRows(rows) {
     if (row.status !== "published_green" && row.status !== "dry_run" && row.sessionFailureKind !== undefined) {
       failureKinds[row.sessionFailureKind] = (failureKinds[row.sessionFailureKind] ?? 0) + 1;
     }
-    for (const tool of row.failedTools ?? []) {
+    const rowFailedTools = row.failedTools ?? [];
+    if (rowFailedTools.length > 0) rowsWithFailedTools += 1;
+    for (const tool of rowFailedTools) {
       failedTools[tool] = (failedTools[tool] ?? 0) + 1;
+      if (row.status === "published_green") {
+        recoveredFailedTools[tool] = (recoveredFailedTools[tool] ?? 0) + 1;
+      }
     }
   }
   finalizeSummaryGroups(byProject);
@@ -152,16 +159,17 @@ export function summarizeRows(rows) {
     byMutationCount,
     failureKinds,
     failedTools,
+    recoveredFailedTools,
+    rowsWithFailedTools,
   };
 }
 
 export function summarizeImprovementSignals(rows) {
   const actionableRows = rows.filter((row) => row.status !== "published_green" && row.status !== "dry_run");
-  if (actionableRows.length === 0) {
-    return ["No non-green benchmark samples were recorded."];
-  }
-
   const signals = [];
+  if (actionableRows.length === 0) {
+    signals.push("No non-green benchmark samples were recorded.");
+  }
   const noPublish = actionableRows.filter((row) => !String(row.status).startsWith("published")).length;
   const checkFailed = actionableRows.filter((row) => row.status === "published_check_failed").length;
   const unexpectedFiles = actionableRows.filter((row) => row.status === "published_unexpected_files").length;
@@ -190,6 +198,19 @@ export function summarizeImprovementSignals(rows) {
   const topFailedTool = Object.entries(toolFailures).sort((left, right) => right[1] - left[1])[0];
   if (topFailedTool !== undefined) {
     signals.push(`Most common failed tool: ${topFailedTool[0]} (${topFailedTool[1]} occurrence(s)).`);
+  }
+
+  const recoveredToolFailures = countValues(
+    rows
+      .filter((row) => row.status === "published_green")
+      .flatMap((row) => row.failedTools ?? []),
+  );
+  const recoveredToolFailureTotal = Object.values(recoveredToolFailures).reduce((total, count) => total + count, 0);
+  const topRecoveredTool = Object.entries(recoveredToolFailures).sort((left, right) => right[1] - left[1])[0];
+  if (topRecoveredTool !== undefined) {
+    signals.push(
+      `${recoveredToolFailureTotal} recovered tool failure(s) occurred inside published-green samples; most common: ${topRecoveredTool[0]} (${topRecoveredTool[1]} occurrence(s)).`,
+    );
   }
 
   return signals;

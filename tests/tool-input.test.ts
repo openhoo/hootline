@@ -9,6 +9,7 @@ import {
   readRequiredAliasedString,
   readRequiredAliasedInteger,
   readRequiredAliasedText,
+  summarySchema,
 } from "../agent/lib/tool-input.ts";
 
 test("normalizes common tool-call envelopes and JSON string arguments", () => {
@@ -26,6 +27,11 @@ test("reads aliased strings and rejects conflicting aliases", () => {
     () => readRequiredAliasedString({ summary: "one", message: "two" }, "summary", ["message"]),
     /Conflicting values for input summary/,
   );
+});
+
+test("publish summary schema exposes only the canonical summary key", () => {
+  assert.deepEqual(Object.keys(summarySchema.properties), ["summary"]);
+  assert.equal(summarySchema.additionalProperties, true);
 });
 
 test("preserves exact aliased text for source edits", () => {

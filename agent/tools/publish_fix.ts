@@ -7,13 +7,13 @@ import { getProviderClient } from "../lib/providers/index.ts";
 import { redact } from "../lib/redact.ts";
 import { collectSandboxChanges, runVerificationCommandsWithPolicy } from "../lib/sandbox.ts";
 import { clearSessionOutcomePatch, updateAttempt } from "../lib/state.ts";
-import { normalizeToolInput, readRequiredAliasedString, summarySchema } from "../lib/tool-input.ts";
+import { normalizeToolInput, readRequiredString, summarySchema } from "../lib/tool-input.ts";
 
 const log = createLogger("tools.publish_fix");
 
 export default defineTool({
   description:
-    "Publish verified sandbox changes according to repository policy. This tool reruns configured checks before publishing and rejects disallowed file paths.",
+    "Publish verified sandbox changes according to repository policy. Input must be exactly { summary: string }; do not include body, message, file lists, or status fields. This tool reruns configured checks before publishing and rejects disallowed file paths.",
   inputSchema: summarySchema,
   async execute(input, ctx) {
     const normalizedInput = normalizeToolInput(input);
@@ -44,7 +44,7 @@ export default defineTool({
         event: attempt.event,
         policy,
         changes,
-        summary: redact(readRequiredAliasedString(normalizedInput, "summary", ["message", "body"]), 4_000),
+        summary: redact(readRequiredString(normalizedInput, "summary"), 4_000),
       });
       if (
         result.mode === "auto_merge" &&

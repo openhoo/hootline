@@ -1,0 +1,21 @@
+{
+  "name": "@support-desk/server",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/app.ts"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json --noEmit",
+    "dev": "bun --watch src/server.ts",
+    "start": "bun src/server.ts",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@support-desk/contracts": "workspace:*",
+    "@support-desk/domain": "workspace:*",
+    "express": "^5.2.1"
+  }
+}
